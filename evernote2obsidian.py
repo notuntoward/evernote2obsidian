@@ -30,6 +30,19 @@ from   datetime    import datetime, timezone
 from   zoneinfo    import ZoneInfo
 from   posixpath   import join as posix_join, normpath as posix_normpath, abspath as posix_abspath
 from   evernote2md import EvernoteHTMLToMarkdownConverter
+
+# IMports for new filename uniquification and html outputs if enabled
+try:
+    from filename_sanitizer import FilenameManager, sanitize_component
+    SANITIZE_AVAILABLE = True
+except ImportError:
+    SANITIZE_AVAILABLE = False
+
+try:
+    from html_fixes import make_web_safe_link_path, embed_resource_as_data_url, bundle_html_resources
+    HTML_FIXES_AVAILABLE = True
+except ImportError:
+    HTML_FIXES_AVAILABLE = False
 try:
     from prompt_toolkit.shortcuts import radiolist_dialog, input_dialog, button_dialog
     from prompt_toolkit.shortcuts.dialogs import  _return_none, _create_app
@@ -109,6 +122,14 @@ for option, value, name, help in (
     ("remove_green_link",  False,               "Remove color of green links",   "For a while, Evernote made internal links (links to other notes) green.\nI recommend removing them and using a CSS snippet in Obsidian instead\nif you want all internal links to be green."),
     ("escape_brackets",    False,               "Replace [] with () in links",   "Square brackets [] are special characters in Markdown.\nThey can appear the text portion of your links, but might look a bit odd in Obsidian.\nSet this to True to replace them with parentheses ()."),
     ("links_with_folders", True,                "Include folder path in links",  "Obsidian can have multiple notes with the same name in different folders.\nSet this to True to include the folder path in links. This helps avoid confusion when multiple notes share the same name.\nSet this to False to use only the note title in links. This keeps links simpler but may cause conflicts if note names are duplicated."),
+    # New filename sanitization options (only if module is available)
+    ("sanitize_filenames", True if SANITIZE_AVAILABLE else False, "Sanitize filenames", "Enable intelligent filename sanitization for cross-platform compatibility.\nRequires filename_sanitizer module.") if SANITIZE_AVAILABLE else None,
+    ("use_spaces_in_filenames", True, "Use spaces in filenames", "If True, use spaces in filenames. If False, use hyphens.") if SANITIZE_AVAILABLE else None,
+    ("max_filename_length", 150, "Max filename base length", "Maximum length for base part of filenames.") if SANITIZE_AVAILABLE else None,
+    # New HTML export options (only if module is available)
+    ("bundle_html_resources", True if HTML_FIXES_AVAILABLE else False, "Bundle HTML resources", "Embed all resources directly into HTML files for portability.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,
+    ("fix_html_links", True if HTML_FIXES_AVAILABLE else False, "Fix HTML file links", "Fix relative links in HTML files to work with file:// protocol.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,
+    ("notebooks", None, "", "Notebooks to export"),
     ("notebooks",          None,                "",                              "Notebooks to export"),
 ):
     default_cfg[option] = value
@@ -791,6 +812,11 @@ class Exporter:
             if option != "notebooks":
                 log(IMPORTANT, f"  {option}: {cfg[option]}")
 
+        # New filename manager if sanitization is enabled
+        filename_manager = None
+        if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
+            filename_manager = FilenameManager(use_spaces=cfg.get("use_spaces_in_filenames", True))
+
         # 1st pass: get all note / attachment titles and IDs to make correct links later.
         log(IMPORTANT, f"Reading notebooks and notes from {cfg['database']}. This might take a while...")
         errors           = []
@@ -812,8 +838,13 @@ class Exporter:
             # Folder names can't end with a space or dot, so remove them
             stack_name        = (notebook["stack"] or "").strip()
             notebook_name     = notebook["name"].strip()
-            stack_name        = safe_path(re.sub(r"[\s\.]+$", "", stack_name))
-            notebook_name     = safe_path(re.sub(r"[\s\.]+$", "", notebook_name))
+            # New Filename sanitization if enabled
+            if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
+                stack_name    = sanitize_component(re.sub(r"[\s\.]+$", "", stack_name), allow_spaces=cfg.get("use_spaces_in_filenames", True))
+                notebook_name = sanitize_component(re.sub(r"[\s\.]+$", "", notebook_name), allow_spaces=cfg.get("use_spaces_in_filenames", True))
+            else:
+                stack_name        = safe_path(re.sub(r"[\s\.]+$", "", stack_name))
+                notebook_name     = safe_path(re.sub(r"[\s\.]+$", "", notebook_name))
             notebook_path_rel = posix_join(stack_name, notebook_name)
             notebook_path_abs = posix_join(self.output_folder, notebook_path_rel)
             notebook_data.append({
@@ -828,9 +859,17 @@ class Exporter:
                 if not note: # skip deleted or empty notes, according to config.
                     continue
 
-                # Create unique RELATIVE note path from notebook and note title
-                safe_name     = safe_path(f"{note.title}{self.note_ext}")
-                safe_name     = get_unique_filename(safe_name, filenames_set)
+                # Create unique RELATIVE note path from notebook and note title with optional new sanitization
+                if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE and filename_manager:
+                    safe_name = filename_manager.get_sanitized_filename(
+                        note.title, 
+                        self.note_ext, 
+                        max_base_len=cfg.get("max_filename_length", 150)
+                    )
+                else:
+                    safe_name = safe_path(f"{note.title}{self.note_ext}")
+                    safe_name = get_unique_filename(safe_name, filenames_set)
+
                 if cfg["links_with_folders"]:
                       note_path_rel = posix_join(notebook_path_rel, safe_name)
                 else: note_path_rel = safe_name
@@ -856,7 +895,15 @@ class Exporter:
                         root = "unnamed"
                     if ext.strip() == "" and resource.mime != "application/octet-stream":
                         ext = mime_ext
-                    fn = safe_path(f"{root}{ext}")
+                    # New filename sanitization to attachments if enabled
+                    if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE and filename_manager:
+                        fn = filename_manager.get_sanitized_filename(
+                            root, ext or "", 
+                            max_base_len=cfg.get("max_filename_length", 150)
+                        )
+                    else:
+                        fn = safe_path(f"{root}{ext}")
+
 
                     # TO-DO:
                     # - Allow user to select folder for attachments (one per notebook / one per note ?)
@@ -1038,6 +1085,7 @@ class Exporter_HTML(Exporter):
             output_folder = to_posix(cfg['output_folder_html']),
             note_ext      = ".md" if cfg["html_with_md_ext"] else ".html",
         )
+        self.current_note_path = "" # needed for new path sanitation
 
 
     def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
@@ -1051,7 +1099,20 @@ class Exporter_HTML(Exporter):
             hash   = int(re.findall('hash="([^"]+)"', en_media)[0], 16)
             if not (path := hash_to_path.get(hash)):
                 log(logging.ERROR, f"    - [ERROR] Path to media hash not found: {hash}")
-                path = hash
+                path = str(hash) # some hashes are ints
+
+            # New HTML fixes if available
+            if cfg.get("fix_html_links") and HTML_FIXES_AVAILABLE:
+                path = make_web_safe_link_path(path, self.current_note_path)
+
+            # New embeded html resource if enabled
+            if cfg.get("bundle_html_resources") and HTML_FIXES_AVAILABLE:
+                try:
+                    embedded_src = embed_resource_as_data_url(path, type_, self.output_folder)
+                    if embedded_src:
+                        path = embedded_src
+                except Exception:
+                    pass  # Fall back to regular path
             if type_.startswith("image"):
                     width  = (re.findall(' width="[^"]+"',  en_media) or [""])[0]
                     height = (re.findall(' height="[^"]+"', en_media) or [""])[0]
@@ -1081,10 +1142,25 @@ class Exporter_HTML(Exporter):
             if not (path := guid_to_path.get(guid)):
                 path  = regex_match[0]
                 log(logging.ERROR, f"    - [ERROR] Path to GUID not found: {guid} ({path})")
+            else:
+                # New link fixes: assume all note html files are in the same directory: remove any leading path
+                if '/' in path:
+                    filename_only = os.path.basename(path)
+                    path = make_web_safe_link_path(filename_only, "")
+                else:
+                    path = make_web_safe_link_path(path, "")                
             return f'"{path}"'
 
         content = re.sub(r'<en-media ([^>]+)\s*/>', subs_en_media, content)
         content = re.sub('"(?:evernote:///view/[^/]+/[^/]+/(.+?)/.+?|https://share.evernote.com/note/(.+?))"', subs_href, content)
+
+        # New html bundled resources if enabled
+        if cfg.get("bundle_html_resources") and HTML_FIXES_AVAILABLE:
+            try:
+                content = bundle_html_resources(content, self.output_folder, True)
+            except Exception as e:
+                log(logging.WARNING, f"Failed to bundle resources: {e}")
+
         return content, errors
 
 

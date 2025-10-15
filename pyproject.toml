@@ -1,0 +1,12 @@
+[project]
+name = "evernote2obsidian"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "evernote-backup>=1.13.1",
+    "lxml>=4.9.3",
+    "prompt-toolkit>=3.0.51",
+]
