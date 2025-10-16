@@ -845,7 +845,13 @@ class Exporter:
             else:
                 stack_name        = safe_path(re.sub(r"[\s\.]+$", "", stack_name))
                 notebook_name     = safe_path(re.sub(r"[\s\.]+$", "", notebook_name))
-            notebook_path_rel = posix_join(stack_name, notebook_name)
+
+            if stack_name:
+                notebook_path_rel = posix_join(stack_name, notebook_name)
+            else:
+               notebook_path_rel = notebook_name
+            # notebook_path_rel = posix_join(stack_name, notebook_name)
+           
             notebook_path_abs = posix_join(self.output_folder, notebook_path_rel)
             notebook_data.append({
                 "guid"    : notebook["guid"],
@@ -1200,6 +1206,83 @@ def export_md():
     markdown_exporter = Exporter_MD()
     return markdown_exporter.export()
 
+class Exporter_Dual(Exporter):
+    def __init__(self):
+        super().__init__(
+            format = "Dual (MD + HTML)",
+            confirm_title = "Confirm conversion from Evernote to both Markdown and HTML?",
+            output_folder = to_posix(cfg['output_folder_md']),
+            note_ext = ".md",
+        )
+
+    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+        converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
+        markdown_content, warnings = converter.convert_html_to_markdown(
+            content, [], tasks, guid_to_path, hash_to_path, options)
+        return markdown_content, warnings
+
+    def export(self):
+        print("Starting dual export (Markdown + HTML)...")
+
+        # First export HTML
+        html_exporter = Exporter_HTML()
+        if not html_exporter.export():
+            return False
+
+        # Export MD with cross-references
+        result = self._export_md_with_crossrefs()
+        if result:
+            print("Dual export completed successfully!")
+        return result
+
+    def _export_md_with_crossrefs(self):
+        # Do regular MD export first
+        if not super().export():
+            return False
+
+        # Post-process to add cross-references
+        html_folder = to_posix(cfg['output_folder_html'])
+        md_folder = self.output_folder
+
+        import os
+        for root, dirs, files in os.walk(md_folder):
+            for file in files:
+                if file.endswith('.md'):
+                    md_path = os.path.join(root, file)
+                    # Calculate corresponding HTML path
+                    rel_path = os.path.relpath(md_path, md_folder)
+                    html_path = os.path.join(html_folder, rel_path.replace('.md', '.html'))
+
+                    if os.path.exists(html_path):
+                        # Add cross-reference to MD file
+                        html_rel = os.path.relpath(html_path, os.path.dirname(md_path))
+                        self._add_crossref_to_file(md_path, html_rel)
+
+        return True
+
+    def _add_crossref_to_file(self, md_path, html_rel_path):
+        with open(md_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        crossref = f"🌐 **[View as HTML]({html_rel_path})**\n\n"
+
+        # Insert after frontmatter if exists
+        if content.startswith('---\n'):
+            end_pos = content.find('\n---\n', 4)
+            if end_pos != -1:
+                new_content = content[:end_pos+5] + crossref + content[end_pos+5:]
+            else:
+                new_content = crossref + content
+        else:
+            new_content = crossref + content
+
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+def export_dual():
+    dual_exporter = Exporter_Dual()
+    return dual_exporter.export()
+
 
 def read_vault(vault_folder):
     md_data   = {} # K: full path for .md files,            V: note content
@@ -1306,6 +1389,7 @@ def main_menu():
             (scan_db,       "Scan selected notebooks for issues (so you can fix them before exporting)"),
             (export_html,   "Export selected notebooks as HTML and attachments"),
             (export_md,     "Export selected notebooks as Obsidian Markdown and attachments"),
+            (export_dual,   "Export selected notebooks as both Markdown and HTML"),            
             (scan_vault,    "Scan Obsidian Vault for issues"),
         ],
     ).run()
