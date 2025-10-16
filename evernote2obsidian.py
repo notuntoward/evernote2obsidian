@@ -1256,15 +1256,28 @@ class Exporter_Dual(Exporter):
             content, [], tasks, guid_to_path, hash_to_path, options)
         return markdown_content, warnings
 
+    # def export(self):
+    #     print("Starting dual export (Markdown + HTML)...")
+
+    #     # First export HTML
+    #     html_exporter = Exporter_HTML()
+    #     if not html_exporter.export():
+    #         return False
+
+    #     # Export MD with enhanced content
+    #     result = self._export_md_with_enhancements()
+    #     if result:
+    #         print("Dual export completed successfully!")
+    #     return result
+
     def export(self):
         print("Starting dual export (Markdown + HTML)...")
 
-        # First export HTML
-        html_exporter = Exporter_HTML()
+        html_exporter = Exporter_HTML_Embedded()
+        html_exporter.output_folder = self.output_folder  # Same base as MD
         if not html_exporter.export():
             return False
 
-        # Export MD with enhanced content
         result = self._export_md_with_enhancements()
         if result:
             print("Dual export completed successfully!")
@@ -1315,12 +1328,10 @@ class Exporter_Dual(Exporter):
 
         if os.path.exists(html_path):
             # Create URL-encoded relative path with forward slashes
-            html_rel = os.path.relpath(html_path, os.path.dirname(md_path))
-            html_rel = html_rel.replace('\\', '/')
-            # URL encode path components
-            path_parts = html_rel.split('/')
-            encoded_parts = [quote(part) for part in path_parts]
-            html_rel_encoded = '/'.join(encoded_parts)
+
+            # For nested structure, HTML is in html/ subdirectory
+            html_filename = os.path.basename(html_path)
+            html_rel_encoded = f"html/{quote(html_filename)}"
 
             # Extract source URL and created date from frontmatter
             source_url = ""
@@ -1355,84 +1366,61 @@ def export_dual():
     dual_exporter = Exporter_Dual()
     return dual_exporter.export()
 
-# class Exporter_Dual(Exporter):
-#     def __init__(self):
-#         super().__init__(
-#             format = "Dual (MD + HTML)",
-#             confirm_title = "Confirm conversion from Evernote to both Markdown and HTML?",
-#             output_folder = to_posix(cfg['output_folder_md']),
-#             note_ext = ".md",
-#         )
 
-#     def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
-#         converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
-#         markdown_content, warnings = converter.convert_html_to_markdown(
-#             content, [], tasks, guid_to_path, hash_to_path, options)
-#         return markdown_content, warnings
+class Exporter_HTML_Embedded(Exporter_HTML):
+    def __init__(self):
+        super().__init__()
+        self.format = "HTML (Embedded)"
+        self.note_ext = ".html"
 
-#     def export(self):
-#         print("Starting dual export (Markdown + HTML)...")
+    def export(self):
+        # Override to create nested html/ directories within each notebook
+        option = confirm_conversion_dialog(self.confirm_title)
+        if option is None: return False
+        if option == "Cancel": return True
 
-#         # First export HTML
-#         html_exporter = Exporter_HTML()
-#         if not html_exporter.export():
-#             return False
+        if not (conn := open_db(cfg['database'])):
+            return False
 
-#         # Export MD with cross-references
-#         result = self._export_md_with_crossrefs()
-#         if result:
-#             print("Dual export completed successfully!")
-#         return result
+        # Use same export logic but with nested html/ folders
+        notebook_data = []
+        notebooks = get_notebooks_from_db(conn)
 
-#     def _export_md_with_crossrefs(self):
-#         # Do regular MD export first
-#         if not super().export():
-#             return False
+        for notebook in sorted(notebooks, key=lambda x: f"{x['stack'] or ''}{x['name']}".lower()):
+            if cfg["notebooks"] and notebook["guid"] not in cfg["notebooks"]:
+                continue
 
-#         # Post-process to add cross-references
-#         html_folder = to_posix(cfg['output_folder_html'])
-#         md_folder = self.output_folder
+            # Create notebook path in base output folder
+            stack_name = (notebook["stack"] or "").strip()
+            notebook_name = notebook["name"].strip()
 
-#         import os
-#         for root, dirs, files in os.walk(md_folder):
-#             for file in files:
-#                 if file.endswith('.md'):
-#                     md_path = os.path.join(root, file)
-#                     # Calculate corresponding HTML path
-#                     rel_path = os.path.relpath(md_path, md_folder)
-#                     html_path = os.path.join(html_folder, rel_path.replace('.md', '.html'))
+            if stack_name:
+                notebook_path_abs = posix_join(self.output_folder, stack_name, notebook_name)
+            else:
+                notebook_path_abs = posix_join(self.output_folder, notebook_name)
 
-#                     if os.path.exists(html_path):
-#                         # Add cross-reference to MD file
-#                         html_rel = os.path.relpath(html_path, os.path.dirname(md_path))
-#                         self._add_crossref_to_file(md_path, html_rel)
+            # Create html/ subdirectory within notebook
+            html_path_abs = posix_join(notebook_path_abs, "html")
+            os.makedirs(html_path_abs, exist_ok=True)
 
-#         return True
+            notebook_data.append({
+                "guid": notebook["guid"],
+                "path_abs": html_path_abs,
+            })
 
-#     def _add_crossref_to_file(self, md_path, html_rel_path):
-#         with open(md_path, 'r', encoding='utf-8') as f:
-#             content = f.read()
+        # Continue with regular HTML export logic but embed resources
+        conn.close()
+        return self._export_with_embedding(notebook_data)
 
-#         crossref = f"🌐 **[View as HTML]({html_rel_path})**\n\n"
-
-#         # Insert after frontmatter if exists
-#         if content.startswith('---\n'):
-#             end_pos = content.find('\n---\n', 4)
-#             if end_pos != -1:
-#                 new_content = content[:end_pos+5] + crossref + content[end_pos+5:]
-#             else:
-#                 new_content = crossref + content
-#         else:
-#             new_content = crossref + content
-
-#         with open(md_path, 'w', encoding='utf-8') as f:
-#             f.write(new_content)
-
-# def export_dual():
-#     dual_exporter = Exporter_Dual()
-#     return dual_exporter.export()
-
-
+    def _export_with_embedding(self, notebook_data):
+        # Implementation would embed all resources into HTML files
+        # For now, delegate to parent with embedding enabled
+        original_bundle = cfg.get("bundle_html_resources", False)
+        cfg["bundle_html_resources"] = True
+        result = super().export()
+        cfg["bundle_html_resources"] = original_bundle
+        return result
+    
 def read_vault(vault_folder):
     md_data   = {} # K: full path for .md files,            V: note content
     abs_paths = {} # K: full path for non-.md files,        V: { "links": 0 }
