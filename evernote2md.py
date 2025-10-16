@@ -580,11 +580,6 @@ class EvernoteHTMLToMarkdownConverter:
                         self.warnings.append(f"Could not parse width value: {width}")
                         result = f'{preview}{result}{nl}'
                 else: result = f'{preview}{result}{nl}'
-                
-                # if (width):
-                #     width  = int(float(width.strip("px")))
-                #     result = f'{preview}[[{file_path}\\|{width}]]{nl}'
-                # else: result = f'{preview}{result}{nl}'
         else:
             pass
             #self.warnings.append(f"Unsupported media type: {type_}")

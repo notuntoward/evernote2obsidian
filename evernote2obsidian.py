@@ -127,7 +127,8 @@ for option, value, name, help in (
     ("use_spaces_in_filenames", True, "Use spaces in filenames", "If True, use spaces in filenames. If False, use hyphens.") if SANITIZE_AVAILABLE else None,
     ("max_filename_length", 150, "Max filename base length", "Maximum length for base part of filenames.") if SANITIZE_AVAILABLE else None,
     # New HTML export options (only if module is available)
-    ("bundle_html_resources", True if HTML_FIXES_AVAILABLE else False, "Bundle HTML resources", "Embed all resources directly into HTML files for portability.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,
+    # ("bundle_html_resources", True if HTML_FIXES_AVAILABLE else False, "Bundle HTML resources", "Embed all resources directly into HTML files for portability.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,
+    ("bundle_html_resources", True, "Bundle HTML resources", "Embed all resources directly into HTML files for portability.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,        
     ("fix_html_links", True if HTML_FIXES_AVAILABLE else False, "Fix HTML file links", "Fix relative links in HTML files to work with file:// protocol.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,
     ("notebooks", None, "", "Notebooks to export"),
     ("notebooks",          None,                "",                              "Notebooks to export"),
@@ -836,21 +837,48 @@ class Exporter:
                 continue
 
             # Folder names can't end with a space or dot, so remove them
-            stack_name        = (notebook["stack"] or "").strip()
-            notebook_name     = notebook["name"].strip()
+            stack_name = (notebook["stack"] or "").strip()
+            notebook_name = notebook["name"].strip()
+
+            # Remove trailing spaces and dots
+            stack_name = re.sub(r'[\s\.]+$', '', stack_name)
+            notebook_name = re.sub(r'[\s\.]+$', '', notebook_name)
+
             # New Filename sanitization if enabled
             if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
-                stack_name    = sanitize_component(re.sub(r"[\s\.]+$", "", stack_name), allow_spaces=cfg.get("use_spaces_in_filenames", True))
-                notebook_name = sanitize_component(re.sub(r"[\s\.]+$", "", notebook_name), allow_spaces=cfg.get("use_spaces_in_filenames", True))
+                if stack_name:
+                    stack_name = sanitize_component(stack_name,
+                                                    allow_spaces=cfg.get("use_spaces_in_filenames",
+                                                                         True))
+                notebook_name = sanitize_component(notebook_name,
+                                                   allow_spaces=cfg.get("use_spaces_in_filenames", True))
             else:
-                stack_name        = safe_path(re.sub(r"[\s\.]+$", "", stack_name))
-                notebook_name     = safe_path(re.sub(r"[\s\.]+$", "", notebook_name))
+                if stack_name:
+                    stack_name = safe_path(stack_name)
+                notebook_name = safe_path(notebook_name)
 
             if stack_name:
                 notebook_path_rel = posix_join(stack_name, notebook_name)
             else:
-               notebook_path_rel = notebook_name
-            # notebook_path_rel = posix_join(stack_name, notebook_name)
+                notebook_path_rel = notebook_name
+            
+
+            # # Folder names can't end with a space or dot, so remove them
+            # stack_name        = (notebook["stack"] or "").strip()
+            # notebook_name     = notebook["name"].strip()
+            # # New Filename sanitization if enabled
+            # if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
+            #     stack_name    = sanitize_component(re.sub(r"[\s\.]+$", "", stack_name), allow_spaces=cfg.get("use_spaces_in_filenames", True))
+            #     notebook_name = sanitize_component(re.sub(r"[\s\.]+$", "", notebook_name), allow_spaces=cfg.get("use_spaces_in_filenames", True))
+            # else:
+            #     stack_name        = safe_path(re.sub(r"[\s\.]+$", "", stack_name))
+            #     notebook_name     = safe_path(re.sub(r"[\s\.]+$", "", notebook_name))
+
+            # if stack_name:
+            #     notebook_path_rel = posix_join(stack_name, notebook_name)
+            # else:
+            #    notebook_path_rel = notebook_name
+            # # notebook_path_rel = posix_join(stack_name, notebook_name)
            
             notebook_path_abs = posix_join(self.output_folder, notebook_path_rel)
             notebook_data.append({
@@ -1020,13 +1048,20 @@ class Exporter:
                 if save_note:
                     # Prepare note properties
                     md_properties = ["---"]
+                    # if note.created:
+                    #     time_ = datetime.fromtimestamp(note.created//1000).strftime('%Y-%m-%d %H:%M:%S')
+                    #     md_properties.append(f"Created at: {time_}")
+                    # if note.updated:
+                    #     time_ = datetime.fromtimestamp(note.updated//1000).strftime('%Y-%m-%d %H:%M:%S')
+                    #     md_properties.append(f"Last updated at: {time_}")
+                    # if note.attributes.sourceURL: md_properties.append(f"Source URL: {note.attributes.sourceURL}")
                     if note.created:
                         time_ = datetime.fromtimestamp(note.created//1000).strftime('%Y-%m-%d %H:%M:%S')
-                        md_properties.append(f"Created at: {time_}")
+                        md_properties.append(f"Evernote created at: {time_}")
                     if note.updated:
                         time_ = datetime.fromtimestamp(note.updated//1000).strftime('%Y-%m-%d %H:%M:%S')
-                        md_properties.append(f"Last updated at: {time_}")
-                    if note.attributes.sourceURL: md_properties.append(f"Source URL: {note.attributes.sourceURL}")
+                        md_properties.append(f"Evernote last updated at: {time_}")
+                    if note.attributes.sourceURL: md_properties.append(f"URL: {note.attributes.sourceURL}")
                     if note.attributes.author:    md_properties.append(f"Author: {note.attributes.author}")
                     # if note.attributes.subjectDate:       md_properties.append(f"subjectDate: {note.attributes.subjectDate}")
                     # if note.attributes.latitude:          md_properties.append(f"latitude: {note.attributes.latitude}")
@@ -1229,59 +1264,173 @@ class Exporter_Dual(Exporter):
         if not html_exporter.export():
             return False
 
-        # Export MD with cross-references
-        result = self._export_md_with_crossrefs()
+        # Export MD with enhanced content
+        result = self._export_md_with_enhancements()
         if result:
             print("Dual export completed successfully!")
         return result
 
-    def _export_md_with_crossrefs(self):
-        # Do regular MD export first
+    def _export_md_with_enhancements(self):
+        # Override the parent's convert method to add enhancements
+        original_convert = self.convert
+
+        def enhanced_convert(content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+            # Get the regular markdown content
+            markdown_content, warnings = original_convert(content, guid_to_path, path_to_guid, hash_to_path, tasks, options)
+            return markdown_content, warnings
+
+        self.convert = enhanced_convert
+
+        # Do regular MD export
         if not super().export():
             return False
 
-        # Post-process to add cross-references
+        # Post-process to add source section and cross-references
+        self._enhance_md_files()
+        return True
+
+    def _enhance_md_files(self):
+        import os
+        from urllib.parse import quote
+
         html_folder = to_posix(cfg['output_folder_html'])
         md_folder = self.output_folder
 
-        import os
         for root, dirs, files in os.walk(md_folder):
             for file in files:
                 if file.endswith('.md'):
                     md_path = os.path.join(root, file)
-                    # Calculate corresponding HTML path
-                    rel_path = os.path.relpath(md_path, md_folder)
-                    html_path = os.path.join(html_folder, rel_path.replace('.md', '.html'))
+                    self._enhance_single_file(md_path, html_folder, md_folder)
 
-                    if os.path.exists(html_path):
-                        # Add cross-reference to MD file
-                        html_rel = os.path.relpath(html_path, os.path.dirname(md_path))
-                        self._add_crossref_to_file(md_path, html_rel)
+    def _enhance_single_file(self, md_path, html_folder, md_folder):
+        import os
+        from urllib.parse import quote
 
-        return True
-
-    def _add_crossref_to_file(self, md_path, html_rel_path):
         with open(md_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        crossref = f"🌐 **[View as HTML]({html_rel_path})**\n\n"
+        # Calculate corresponding HTML path
+        rel_path = os.path.relpath(md_path, md_folder)
+        html_path = os.path.join(html_folder, rel_path.replace('.md', '.html'))
 
-        # Insert after frontmatter if exists
-        if content.startswith('---\n'):
-            end_pos = content.find('\n---\n', 4)
-            if end_pos != -1:
-                new_content = content[:end_pos+5] + crossref + content[end_pos+5:]
-            else:
-                new_content = crossref + content
-        else:
-            new_content = crossref + content
+        if os.path.exists(html_path):
+            # Create URL-encoded relative path with forward slashes
+            html_rel = os.path.relpath(html_path, os.path.dirname(md_path))
+            html_rel = html_rel.replace('\\', '/')
+            # URL encode path components
+            path_parts = html_rel.split('/')
+            encoded_parts = [quote(part) for part in path_parts]
+            html_rel_encoded = '/'.join(encoded_parts)
 
-        with open(md_path, 'w', encoding='utf-8') as f:
-            f.write(new_content)
+            # Extract source URL and created date from frontmatter
+            source_url = ""
+            created_date = ""
+
+            if content.startswith('---\n'):
+                end_pos = content.find('\n---\n', 4)
+                if end_pos != -1:
+                    frontmatter = content[4:end_pos]
+                    for line in frontmatter.split('\n'):
+                        if line.startswith('URL: '):
+                            source_url = line[5:]
+                        elif line.startswith('Evernote created at: '):
+                            created_date = line[21:31]  # Extract just the date part YYYY-MM-DD
+
+                    # Build source section - NO initial newline
+                    source_section = ""
+                    if source_url:
+                        source_section += f"[Source]({source_url}) | "
+                    source_section += f"[Note HTML]({html_rel_encoded})"
+                    if created_date:
+                        source_section += f" | {created_date}"
+                    source_section += "\n\n---\n"
+
+                    # Insert source section after frontmatter
+                    new_content = content[:end_pos+5] + source_section + content[end_pos+5:]
+
+                    with open(md_path, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
 
 def export_dual():
     dual_exporter = Exporter_Dual()
     return dual_exporter.export()
+
+# class Exporter_Dual(Exporter):
+#     def __init__(self):
+#         super().__init__(
+#             format = "Dual (MD + HTML)",
+#             confirm_title = "Confirm conversion from Evernote to both Markdown and HTML?",
+#             output_folder = to_posix(cfg['output_folder_md']),
+#             note_ext = ".md",
+#         )
+
+#     def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+#         converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
+#         markdown_content, warnings = converter.convert_html_to_markdown(
+#             content, [], tasks, guid_to_path, hash_to_path, options)
+#         return markdown_content, warnings
+
+#     def export(self):
+#         print("Starting dual export (Markdown + HTML)...")
+
+#         # First export HTML
+#         html_exporter = Exporter_HTML()
+#         if not html_exporter.export():
+#             return False
+
+#         # Export MD with cross-references
+#         result = self._export_md_with_crossrefs()
+#         if result:
+#             print("Dual export completed successfully!")
+#         return result
+
+#     def _export_md_with_crossrefs(self):
+#         # Do regular MD export first
+#         if not super().export():
+#             return False
+
+#         # Post-process to add cross-references
+#         html_folder = to_posix(cfg['output_folder_html'])
+#         md_folder = self.output_folder
+
+#         import os
+#         for root, dirs, files in os.walk(md_folder):
+#             for file in files:
+#                 if file.endswith('.md'):
+#                     md_path = os.path.join(root, file)
+#                     # Calculate corresponding HTML path
+#                     rel_path = os.path.relpath(md_path, md_folder)
+#                     html_path = os.path.join(html_folder, rel_path.replace('.md', '.html'))
+
+#                     if os.path.exists(html_path):
+#                         # Add cross-reference to MD file
+#                         html_rel = os.path.relpath(html_path, os.path.dirname(md_path))
+#                         self._add_crossref_to_file(md_path, html_rel)
+
+#         return True
+
+#     def _add_crossref_to_file(self, md_path, html_rel_path):
+#         with open(md_path, 'r', encoding='utf-8') as f:
+#             content = f.read()
+
+#         crossref = f"🌐 **[View as HTML]({html_rel_path})**\n\n"
+
+#         # Insert after frontmatter if exists
+#         if content.startswith('---\n'):
+#             end_pos = content.find('\n---\n', 4)
+#             if end_pos != -1:
+#                 new_content = content[:end_pos+5] + crossref + content[end_pos+5:]
+#             else:
+#                 new_content = crossref + content
+#         else:
+#             new_content = crossref + content
+
+#         with open(md_path, 'w', encoding='utf-8') as f:
+#             f.write(new_content)
+
+# def export_dual():
+#     dual_exporter = Exporter_Dual()
+#     return dual_exporter.export()
 
 
 def read_vault(vault_folder):
