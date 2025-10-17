@@ -1340,103 +1340,185 @@ class Exporter_Dual(Exporter):
         if not (conn := open_db(cfg['database'])):
             return False
 
-        # Create HTML exporter with embedding
-        html_exporter = Exporter_HTML()
+        def get_tasks_for_note_id(note_guid):
+            tasks = {}
+            try:
+                cursor = conn.execute(
+                    "select guid, raw_task from tasks where note_guid=?",
+                    (note_guid, ) )
+            except sqlite3.OperationalError as e:
+                return tasks
+            except Exception as e:
+                return tasks
+            for task_guid, raw_task in cursor:
+                try:
+                    task = json.loads(lzma.decompress(raw_task).decode("utf-8"))
+                    for reminder_guid, raw_reminder in conn.execute(
+                        "select guid, raw_reminder from reminders where task_guid=?",
+                        (task_guid,) ):
+                        try:
+                            reminder = json.loads(lzma.decompress(raw_reminder).decode("utf-8"))
+                            task["reminders"].append(reminder)
+                        except Exception as e:
+                            pass
+                    tasks[task_guid] = task
+                except Exception as e:
+                    pass
+            return tasks
 
-        # Override to create nested html/ directories within each notebook
-        original_export = html_exporter.export
-        def custom_html_export():
-            # Get all notebooks and create nested html folders
-            notebooks = get_notebooks_from_db(conn)
-            for notebook in sorted(notebooks, key=lambda x: f"{x['stack'] or ''}{x['name']}".lower()):
-                if cfg["notebooks"] and notebook["guid"] not in cfg["notebooks"]:
+        def get_note_notecontent(row_note):
+            note, note_content, tasks = False, False, []
+            is_active, raw_note = row_note
+            if is_active or cfg["export_trash"]:
+                note = pickle.loads(lzma.decompress(raw_note))
+                re_note_content = re.search("<en-note[^>]*?>(.*?)</en-note>", note.content, re.DOTALL)
+                note_content = re_note_content[1] if re_note_content else ""
+                if not cfg["export_empty_note"]:
+                    if not note_content.replace("\n", ""):
+                        return False, False, tasks
+                tasks = get_tasks_for_note_id(note.guid)
+            return note, note_content, tasks
+
+        filename_manager = None
+        if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
+            filename_manager = FilenameManager(use_spaces=cfg.get("use_spaces_in_filenames", True))
+
+        log(IMPORTANT, f"Reading notebooks and notes for HTML export...")
+        guid_to_path_rel = {}
+        guid_to_path_abs = {}
+        path_to_guid = {}
+        hash_to_path = {}
+        filenames_set = set()
+        notebook_data = []
+
+        notebooks = get_notebooks_from_db(conn)
+        sorted_notebooks = sorted(notebooks, key=lambda x: f"{x['stack' or '']}{x['name']}".lower() )
+
+        html_converter = Exporter_HTML()
+
+        for notebook in sorted_notebooks:
+            if cfg["notebooks"] and notebook["guid"] not in cfg["notebooks"]:
+                continue
+
+            stack_name = (notebook["stack"] or "").strip()
+            notebook_name = notebook["name"].strip()
+            stack_name = re.sub(r'[\s\.]+$', '', stack_name)
+            notebook_name = re.sub(r'[\s\.]+$', '', notebook_name)
+
+            if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
+                if stack_name:
+                    stack_name = sanitize_component(stack_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
+                notebook_name = sanitize_component(notebook_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
+            else:
+                if stack_name:
+                    stack_name = safe_path(stack_name)
+                notebook_name = safe_path(notebook_name)
+
+            if stack_name:
+                notebook_path_rel = posix_join(stack_name, notebook_name)
+            else:
+                notebook_path_rel = notebook_name
+
+            # HTML files go to html/ subdirectory
+            notebook_path_abs = posix_join(self.output_folder, notebook_path_rel, "html")
+            notebook_data.append({
+                "guid"    : notebook["guid"],
+                "path_rel": notebook_path_rel,
+                "path_abs": notebook_path_abs,
+            })
+
+            for row_note in get_notes_from_notebook(conn, notebook["guid"]):
+                note, note_content, tasks = get_note_notecontent(row_note)
+                if not note:
                     continue
 
-                # Create notebook path in dual output folder
-                stack_name = (notebook["stack"] or "").strip()
-                notebook_name = notebook["name"].strip()
-
-                # Remove trailing spaces and dots
-                stack_name = re.sub(r'[\s\.]+$', '', stack_name)
-                notebook_name = re.sub(r'[\s\.]+$', '', notebook_name)
-
-                # Apply sanitization
-                if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
-                    if stack_name:
-                        stack_name = sanitize_component(stack_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
-                    notebook_name = sanitize_component(notebook_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
+                if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE and filename_manager:
+                    safe_name = filename_manager.get_sanitized_filename(
+                        note.title, 
+                        ".html",
+                        max_base_len=cfg.get("max_filename_length", 150)
+                    )
                 else:
-                    if stack_name:
-                        stack_name = safe_path(stack_name)
-                    notebook_name = safe_path(notebook_name)
+                    safe_name = safe_path(f"{note.title}.html")
 
-                if stack_name:
-                    notebook_path_abs = posix_join(self.output_folder, stack_name, notebook_name)
-                else:
-                    notebook_path_abs = posix_join(self.output_folder, notebook_name)
+                safe_name = get_unique_filename(safe_name, filenames_set)
+                note_path_abs = posix_join(notebook_path_abs, safe_name)
+                filenames_set.add(safe_name.lower())
 
-                # Create html/ subdirectory within notebook
-                html_path_abs = posix_join(notebook_path_abs, "html")
-                os.makedirs(html_path_abs, exist_ok=True)
+                guid_to_path_rel[note.guid] = safe_name
+                guid_to_path_abs[note.guid] = note_path_abs
 
-            # Temporarily change HTML exporter output folder to point to html subdirectories
-            original_output_folder = html_exporter.output_folder
+                for resource in note.resources or []:
+                    if not cfg["export_empty_file"] and resource.data.size == 0:
+                        continue
 
-            # Force HTML resource bundling
-            original_bundle = cfg.get("bundle_html_resources", False)
-            cfg["bundle_html_resources"] = True
+                    fn = resource.attributes.fileName or "unnamed"
+                    mime_ext = mimetypes.guess_extension(resource.mime)
+                    root, ext = os.path.splitext(fn)
+                    if root.strip() == "":
+                        root = "unnamed"
+                    if ext.strip() == "" and resource.mime != "application/octet-stream":
+                        ext = mime_ext
 
-            # Update HTML exporter to use nested html paths
-            def get_html_path(notebook_guid):
-                notebooks = get_notebooks_from_db(conn)
-                notebook = next((nb for nb in notebooks if nb["guid"] == notebook_guid), None)
-                if not notebook:
-                    return original_output_folder
+                    if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE and filename_manager:
+                        fn = filename_manager.get_sanitized_filename(
+                            root, ext or "", 
+                            max_base_len=cfg.get("max_filename_length", 150)
+                        )
+                    else:
+                        fn = safe_path(f"{root}{ext}")
 
-                stack_name = (notebook["stack"] or "").strip()
-                notebook_name = notebook["name"].strip()
+                    hash = int.from_bytes(resource.data.bodyHash)
+                    hash_to_path[hash] = fn
 
-                # Remove trailing spaces and dots  
-                stack_name = re.sub(r'[\s\.]+$', '', stack_name)
-                notebook_name = re.sub(r'[\s\.]+$', '', notebook_name)
+        # Export HTML notes to html/ subdirectories
+        log(IMPORTANT, f"Exporting HTML files to html/ subdirectories")
 
-                # Apply sanitization
-                if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
-                    if stack_name:
-                        stack_name = sanitize_component(stack_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
-                    notebook_name = sanitize_component(notebook_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
-                else:
-                    if stack_name:
-                        stack_name = safe_path(stack_name)
-                    notebook_name = safe_path(notebook_name)
+        for nb_data in notebook_data:
+            notebook_guid = nb_data["guid"]
+            notebook_path_abs = nb_data["path_abs"]
 
-                if stack_name:
-                    return posix_join(self.output_folder, stack_name, notebook_name, "html")
-                else:
-                    return posix_join(self.output_folder, notebook_name, "html")
+            cur = conn.execute(
+                "select COUNT(*) from notes where notebook_guid=? and is_active=1",
+                (notebook_guid,) )
+            num_notes = int(cur.fetchone()[0])
 
-            # Patch the HTML exporter to use correct paths
-            original_html_export_method = html_exporter.export
+            log(IMPORTANT, f"{num_notes:5,} HTML files - {notebook_path_abs}")
+            os.makedirs(notebook_path_abs, exist_ok=True)
 
-            # Update the HTML exporter's output folder dynamically during export
-            html_exporter.output_folder = self.output_folder  # Use dual output folder as base
+            for row_note in get_notes_from_notebook(conn, notebook_guid):
+                note, note_content, tasks = get_note_notecontent(row_note)
+                if not note:
+                    continue
 
-            # Call the original export but with our modifications
-            result = original_html_export_method()
+                note_path_abs = guid_to_path_abs[note.guid]
 
-            # Restore settings
-            cfg["bundle_html_resources"] = original_bundle
-            html_exporter.output_folder = original_output_folder
+                if not cfg["overwrite"] and os.path.exists(note_path_abs):
+                    log(logging.WARNING, f"  - Skipping, already exists: {note_path_abs}")
+                    continue
 
-            return result
+                log(logging.INFO, f"  - {note_path_abs}")
 
-        # Run the custom HTML export
-        try:
-            return custom_html_export()
-        except Exception as e:
-            log(logging.ERROR, f"Error in HTML export phase: {e}")
-            return False
+                # Convert to HTML with embedded resources
+                converted_content, conversion_issues = html_converter.convert(
+                    note_content, guid_to_path_rel, path_to_guid, hash_to_path, {}, cfg)
 
+                if conversion_issues:
+                    log(logging.WARNING, f'Issues converting "{note.title}":')
+                    for issue in conversion_issues:
+                        log(logging.WARNING, f"  - {issue}")
+
+                # Save HTML file
+                try:
+                    with open(note_path_abs, "w", encoding="utf-8") as fh:
+                        fh.write(converted_content)
+                except Exception as e:
+                    log(logging.ERROR, f"  Error saving {note_path_abs}: **{e}**")
+
+        conn.close()
+        return True
+
+    
     def _export_md_with_enhancements(self):
         """Export markdown files with source links to corresponding HTML files."""
         # Do regular MD export using the parent Exporter class
@@ -1613,7 +1695,7 @@ def main_menu():
             (scan_db,       "Scan selected notebooks for issues (so you can fix them before exporting)"),
             (export_html,   "Export selected notebooks as HTML and attachments"),
             (export_md,     "Export selected notebooks as Obsidian Markdown and attachments"),
-            (export_dual,   "Export selected notebooks as both Markdown and HTML"),            
+            (export_dual,   "Export selected notebooks as both Markdown (with attachments) and HTML"),            
             (scan_vault,    "Scan Obsidian Vault for issues"),
         ],
     ).run()
