@@ -105,6 +105,7 @@ for option, value, name, help in (
     ("database",           "en_backup.db",      "Database path",                 "Location of your 'evernote-backup' database,\ncreated with 'evernote-backup init-db'."),
     ("output_folder_md",   "md",                "Vault/Markdown output folder",  "Folder where Markdown and attachment files will be exported to."),
     ("output_folder_html", "html",              "HTML output folder",            "Folder where HTML and attachment files will be exported to."),
+    ("output_folder_dual", "dual",              "Dual MD+HTML output folder", "Folder where both Markdown and HTML files will be exported to.\nThis creates a nested structure with both formats."),        
     ("html_with_md_ext",   False,               "Use HTML in .md files",         'If True:\n - Notes exported as HTML will have .md extension, .html otherwise.\n - Notes exported as Markdown will include some formatting in HTML.\nHTML in .md can be awful to edit and break Markdown formatting, but might be worth testing. It all depends on how you format your notes, and how much some HTML formatting (e.g., text color) is important for you to keep.'),
     ("log_file",           "conversion.log",    "Log file",                      "File name for log. Leave empty to skip logging."),
     ("log_level",          "warning",           "Log verbosity",                 "Choose log verbosity level:\n  debug    = most verbose\n  critical = least verbose" ),
@@ -130,7 +131,6 @@ for option, value, name, help in (
     # ("bundle_html_resources", True if HTML_FIXES_AVAILABLE else False, "Bundle HTML resources", "Embed all resources directly into HTML files for portability.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,
     ("bundle_html_resources", True, "Bundle HTML resources", "Embed all resources directly into HTML files for portability.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,        
     ("fix_html_links", True if HTML_FIXES_AVAILABLE else False, "Fix HTML file links", "Fix relative links in HTML files to work with file:// protocol.\nRequires html_fixes module.") if HTML_FIXES_AVAILABLE else None,
-    ("notebooks", None, "", "Notebooks to export"),
     ("notebooks",          None,                "",                              "Notebooks to export"),
 ):
     default_cfg[option] = value
@@ -1048,21 +1048,26 @@ class Exporter:
                 if save_note:
                     # Prepare note properties
                     md_properties = ["---"]
-                    # if note.created:
-                    #     time_ = datetime.fromtimestamp(note.created//1000).strftime('%Y-%m-%d %H:%M:%S')
-                    #     md_properties.append(f"Created at: {time_}")
-                    # if note.updated:
-                    #     time_ = datetime.fromtimestamp(note.updated//1000).strftime('%Y-%m-%d %H:%M:%S')
-                    #     md_properties.append(f"Last updated at: {time_}")
-                    # if note.attributes.sourceURL: md_properties.append(f"Source URL: {note.attributes.sourceURL}")
+
+                    if note.tagNames:
+                        md_properties.append("tags:")
+                        for tag in note.tagNames:
+                            tag_name = tag.replace(" ", "-")
+                            md_properties.append(f" - {tag_name}")
+
+                    if note.attributes.sourceURL:
+                        md_properties.append(f"URL: {note.attributes.sourceURL}")
+
                     if note.created:
                         time_ = datetime.fromtimestamp(note.created//1000).strftime('%Y-%m-%d %H:%M:%S')
                         md_properties.append(f"Evernote created at: {time_}")
                     if note.updated:
                         time_ = datetime.fromtimestamp(note.updated//1000).strftime('%Y-%m-%d %H:%M:%S')
                         md_properties.append(f"Evernote last updated at: {time_}")
-                    if note.attributes.sourceURL: md_properties.append(f"URL: {note.attributes.sourceURL}")
-                    if note.attributes.author:    md_properties.append(f"Author: {note.attributes.author}")
+
+                    if note.attributes.author:
+                        md_properties.append(f"Author: {note.attributes.author}")
+
                     # if note.attributes.subjectDate:       md_properties.append(f"subjectDate: {note.attributes.subjectDate}")
                     # if note.attributes.latitude:          md_properties.append(f"latitude: {note.attributes.latitude}")
                     # if note.attributes.longitude:         md_properties.append(f"longitude: {note.attributes.longitude}")
@@ -1080,11 +1085,7 @@ class Exporter:
                     # if note.attributes.classifications:   md_properties.append(f"classifications: {note.attributes.classifications}")
                     # if note.attributes.creatorId:         md_properties.append(f"creatorId: {note.attributes.creatorId}")
                     # if note.attributes.lastEditorId:      md_properties.append(f"lastEditorId: {note.attributes.lastEditorId}")
-                    if note.tagNames:
-                        md_properties.append("tags:")
-                        for tag in note.tagNames:
-                            tag_name = tag.replace(" ", "-")
-                            md_properties.append(f" - {tag_name}")
+
                     md_properties.append("---\n")
                     md_properties = "\n".join(md_properties)
 
@@ -1146,8 +1147,8 @@ class Exporter_HTML(Exporter):
             if cfg.get("fix_html_links") and HTML_FIXES_AVAILABLE:
                 path = make_web_safe_link_path(path, self.current_note_path)
 
-            # New embeded html resource if enabled
-            if cfg.get("bundle_html_resources") and HTML_FIXES_AVAILABLE:
+            # New embedded html resource if enabled - ALWAYS EMBED FOR HTML FILES
+            if cfg.get("bundle_html_resources", True) and HTML_FIXES_AVAILABLE:
                 try:
                     embedded_src = embed_resource_as_data_url(path, type_, self.output_folder)
                     if embedded_src:
@@ -1195,8 +1196,8 @@ class Exporter_HTML(Exporter):
         content = re.sub(r'<en-media ([^>]+)\s*/>', subs_en_media, content)
         content = re.sub('"(?:evernote:///view/[^/]+/[^/]+/(.+?)/.+?|https://share.evernote.com/note/(.+?))"', subs_href, content)
 
-        # New html bundled resources if enabled
-        if cfg.get("bundle_html_resources") and HTML_FIXES_AVAILABLE:
+        # New html bundled resources if enabled - ALWAYS BUNDLE FOR HTML FILES
+        if cfg.get("bundle_html_resources", True) and HTML_FIXES_AVAILABLE:
             try:
                 content = bundle_html_resources(content, self.output_folder, True)
             except Exception as e:
@@ -1217,6 +1218,29 @@ class Exporter_MD(Exporter):
 
 
     def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+        # Fix markdown link paths to be relative within same notebook
+        def fix_md_link_paths(md_content):
+            # Pattern matches [[notebook_path/note_name.md|display_name]] 
+            # and replaces with [[note_name.md|display_name]]
+            def fix_link(match):
+                full_link = match.group(0)
+                link_path = match.group(1)
+                display_text = match.group(2) if match.group(2) else ""
+
+                # Extract just the filename from the path
+                if '/' in link_path:
+                    filename = os.path.basename(link_path)
+                    if display_text:
+                        return f"[[{filename}|{display_text}]]"
+                    else:
+                        return f"[[{filename}]]"
+
+                return full_link
+
+            # Fix wikilinks with optional display text
+            md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)
+            return md_content
+
         markdown_content, warnings = self.converter.convert_html_to_markdown(
             content, 
             md_properties = [], # actually processed by parent of this
@@ -1228,6 +1252,9 @@ class Exporter_MD(Exporter):
         # if warnings:
         #     for warning in warnings:
         #         log(logging.WARNING, f"   - {warning}")
+
+        # Fix the markdown link paths
+        markdown_content = fix_md_link_paths(markdown_content)
 
         return markdown_content, warnings
 
@@ -1246,55 +1273,173 @@ class Exporter_Dual(Exporter):
         super().__init__(
             format = "Dual (MD + HTML)",
             confirm_title = "Confirm conversion from Evernote to both Markdown and HTML?",
-            output_folder = to_posix(cfg['output_folder_md']),
+            output_folder = to_posix(cfg['output_folder_dual']),
             note_ext = ".md",
         )
 
     def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+        # Fix markdown link paths to be relative within same notebook
+        def fix_md_link_paths(md_content):
+            # Pattern matches [[notebook_path/note_name.md|display_name]] 
+            # and replaces with [[note_name.md|display_name]]
+            def fix_link(match):
+                full_link = match.group(0)
+                link_path = match.group(1)
+                display_text = match.group(2) if match.group(2) else ""
+
+                # Extract just the filename from the path
+                if '/' in link_path:
+                    filename = os.path.basename(link_path)
+                    if display_text:
+                        return f"[[{filename}|{display_text}]]"
+                    else:
+                        return f"[[{filename}]]"
+
+                return full_link
+
+            # Fix wikilinks with optional display text
+            md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)
+            return md_content
+
         converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
         markdown_content, warnings = converter.convert_html_to_markdown(
             content, [], tasks, guid_to_path, hash_to_path, options)
+
+        # Fix the markdown link paths
+        markdown_content = fix_md_link_paths(markdown_content)
+
         return markdown_content, warnings
 
-    # def export(self):
-    #     print("Starting dual export (Markdown + HTML)...")
-
-    #     # First export HTML
-    #     html_exporter = Exporter_HTML()
-    #     if not html_exporter.export():
-    #         return False
-
-    #     # Export MD with enhanced content
-    #     result = self._export_md_with_enhancements()
-    #     if result:
-    #         print("Dual export completed successfully!")
-    #     return result
-
     def export(self):
-        print("Starting dual export (Markdown + HTML)...")
+        option = confirm_conversion_dialog(self.confirm_title)
+        if option is None:
+            return False
+        if option == "Cancel":
+            return True
 
-        html_exporter = Exporter_HTML_Embedded()
-        html_exporter.output_folder = self.output_folder  # Same base as MD
-        if not html_exporter.export():
+        if not (conn := open_db(cfg['database'])):
             return False
 
+        # First export HTML with embedding to html/ subdirectories
+        log(IMPORTANT, "Starting dual export - Phase 1: HTML with embedding")
+        if not self._export_html_embedded():
+            conn.close()
+            return False
+
+        # Then export MD with enhanced content 
+        log(IMPORTANT, "Starting dual export - Phase 2: Markdown with source links")
         result = self._export_md_with_enhancements()
+
+        conn.close()
         if result:
             print("Dual export completed successfully!")
         return result
 
+    def _export_html_embedded(self):
+        """Export HTML files to html/ subdirectories within each notebook with embedded resources."""
+        if not (conn := open_db(cfg['database'])):
+            return False
+
+        # Create HTML exporter with embedding
+        html_exporter = Exporter_HTML()
+
+        # Override to create nested html/ directories within each notebook
+        original_export = html_exporter.export
+        def custom_html_export():
+            # Get all notebooks and create nested html folders
+            notebooks = get_notebooks_from_db(conn)
+            for notebook in sorted(notebooks, key=lambda x: f"{x['stack'] or ''}{x['name']}".lower()):
+                if cfg["notebooks"] and notebook["guid"] not in cfg["notebooks"]:
+                    continue
+
+                # Create notebook path in dual output folder
+                stack_name = (notebook["stack"] or "").strip()
+                notebook_name = notebook["name"].strip()
+
+                # Remove trailing spaces and dots
+                stack_name = re.sub(r'[\s\.]+$', '', stack_name)
+                notebook_name = re.sub(r'[\s\.]+$', '', notebook_name)
+
+                # Apply sanitization
+                if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
+                    if stack_name:
+                        stack_name = sanitize_component(stack_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
+                    notebook_name = sanitize_component(notebook_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
+                else:
+                    if stack_name:
+                        stack_name = safe_path(stack_name)
+                    notebook_name = safe_path(notebook_name)
+
+                if stack_name:
+                    notebook_path_abs = posix_join(self.output_folder, stack_name, notebook_name)
+                else:
+                    notebook_path_abs = posix_join(self.output_folder, notebook_name)
+
+                # Create html/ subdirectory within notebook
+                html_path_abs = posix_join(notebook_path_abs, "html")
+                os.makedirs(html_path_abs, exist_ok=True)
+
+            # Temporarily change HTML exporter output folder to point to html subdirectories
+            original_output_folder = html_exporter.output_folder
+
+            # Force HTML resource bundling
+            original_bundle = cfg.get("bundle_html_resources", False)
+            cfg["bundle_html_resources"] = True
+
+            # Update HTML exporter to use nested html paths
+            def get_html_path(notebook_guid):
+                notebooks = get_notebooks_from_db(conn)
+                notebook = next((nb for nb in notebooks if nb["guid"] == notebook_guid), None)
+                if not notebook:
+                    return original_output_folder
+
+                stack_name = (notebook["stack"] or "").strip()
+                notebook_name = notebook["name"].strip()
+
+                # Remove trailing spaces and dots  
+                stack_name = re.sub(r'[\s\.]+$', '', stack_name)
+                notebook_name = re.sub(r'[\s\.]+$', '', notebook_name)
+
+                # Apply sanitization
+                if cfg.get("sanitize_filenames") and SANITIZE_AVAILABLE:
+                    if stack_name:
+                        stack_name = sanitize_component(stack_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
+                    notebook_name = sanitize_component(notebook_name, allow_spaces=cfg.get("use_spaces_in_filenames", True))
+                else:
+                    if stack_name:
+                        stack_name = safe_path(stack_name)
+                    notebook_name = safe_path(notebook_name)
+
+                if stack_name:
+                    return posix_join(self.output_folder, stack_name, notebook_name, "html")
+                else:
+                    return posix_join(self.output_folder, notebook_name, "html")
+
+            # Patch the HTML exporter to use correct paths
+            original_html_export_method = html_exporter.export
+
+            # Update the HTML exporter's output folder dynamically during export
+            html_exporter.output_folder = self.output_folder  # Use dual output folder as base
+
+            # Call the original export but with our modifications
+            result = original_html_export_method()
+
+            # Restore settings
+            cfg["bundle_html_resources"] = original_bundle
+            html_exporter.output_folder = original_output_folder
+
+            return result
+
+        # Run the custom HTML export
+        try:
+            return custom_html_export()
+        except Exception as e:
+            log(logging.ERROR, f"Error in HTML export phase: {e}")
+            return False
+
     def _export_md_with_enhancements(self):
-        # Override the parent's convert method to add enhancements
-        original_convert = self.convert
-
-        def enhanced_convert(content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
-            # Get the regular markdown content
-            markdown_content, warnings = original_convert(content, guid_to_path, path_to_guid, hash_to_path, tasks, options)
-            return markdown_content, warnings
-
-        self.convert = enhanced_convert
-
-        # Do regular MD export
+        """Export markdown files with source links to corresponding HTML files."""
+        # Do regular MD export using the parent Exporter class
         if not super().export():
             return False
 
@@ -1303,124 +1448,66 @@ class Exporter_Dual(Exporter):
         return True
 
     def _enhance_md_files(self):
-        import os
+        """Add source links to each markdown file."""
         from urllib.parse import quote
 
-        html_folder = to_posix(cfg['output_folder_html'])
-        md_folder = self.output_folder
-
-        for root, dirs, files in os.walk(md_folder):
+        for root, dirs, files in os.walk(self.output_folder):
             for file in files:
                 if file.endswith('.md'):
                     md_path = os.path.join(root, file)
-                    self._enhance_single_file(md_path, html_folder, md_folder)
+                    self._enhance_single_file(md_path)
 
-    def _enhance_single_file(self, md_path, html_folder, md_folder):
-        import os
+    def _enhance_single_file(self, md_path):
+        """Add source section to a single markdown file."""
         from urllib.parse import quote
 
         with open(md_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
         # Calculate corresponding HTML path
-        rel_path = os.path.relpath(md_path, md_folder)
-        html_path = os.path.join(html_folder, rel_path.replace('.md', '.html'))
+        rel_path_from_dual = os.path.relpath(md_path, self.output_folder)
 
-        if os.path.exists(html_path):
-            # Create URL-encoded relative path with forward slashes
+        # HTML file should be in html/ subdirectory of same notebook
+        notebook_dir = os.path.dirname(rel_path_from_dual)
+        html_filename = os.path.basename(md_path).replace('.md', '.html')
+        html_rel_path = posix_join("html", html_filename)
 
-            # For nested structure, HTML is in html/ subdirectory
-            html_filename = os.path.basename(html_path)
-            html_rel_encoded = f"html/{quote(html_filename)}"
+        # URL encode for web safety
+        html_rel_encoded = quote(html_rel_path, safe='/')
 
-            # Extract source URL and created date from frontmatter
-            source_url = ""
-            created_date = ""
+        # Extract source URL and created date from frontmatter
+        source_url = ""
+        created_date = ""
 
-            if content.startswith('---\n'):
-                end_pos = content.find('\n---\n', 4)
-                if end_pos != -1:
-                    frontmatter = content[4:end_pos]
-                    for line in frontmatter.split('\n'):
-                        if line.startswith('URL: '):
-                            source_url = line[5:]
-                        elif line.startswith('Evernote created at: '):
-                            created_date = line[21:31]  # Extract just the date part YYYY-MM-DD
+        if content.startswith('---\n'):
+            end_pos = content.find('\n---\n', 4)
+            if end_pos != -1:
+                frontmatter = content[4:end_pos]
+                for line in frontmatter.split('\n'):
+                    if line.startswith('URL: '):
+                        source_url = line[5:]
+                    elif line.startswith('Evernote created at: '):
+                        created_date = line[21:31]  # Extract just the date part YYYY-MM-DD
 
-                    # Build source section - NO initial newline
-                    source_section = ""
-                    if source_url:
-                        source_section += f"[Source]({source_url}) | "
-                    source_section += f"[Note HTML]({html_rel_encoded})"
-                    if created_date:
-                        source_section += f" | {created_date}"
-                    source_section += "\n\n---\n"
+                # Build source section
+                source_section = ""
+                if source_url:
+                    source_section += f"[Source]({source_url}) | "
+                source_section += f"[Note HTML]({html_rel_encoded})"
+                if created_date:
+                    source_section += f" | {created_date}"
+                source_section += "\n\n---\n"
 
-                    # Insert source section after frontmatter
-                    new_content = content[:end_pos+5] + source_section + content[end_pos+5:]
+                # Insert source section after frontmatter
+                new_content = content[:end_pos+5] + source_section + content[end_pos+5:]
 
-                    with open(md_path, 'w', encoding='utf-8') as f:
-                        f.write(new_content)
+                with open(md_path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
 
 def export_dual():
     dual_exporter = Exporter_Dual()
     return dual_exporter.export()
 
-
-class Exporter_HTML_Embedded(Exporter_HTML):
-    def __init__(self):
-        super().__init__()
-        self.format = "HTML (Embedded)"
-        self.note_ext = ".html"
-
-    def export(self):
-        # Override to create nested html/ directories within each notebook
-        option = confirm_conversion_dialog(self.confirm_title)
-        if option is None: return False
-        if option == "Cancel": return True
-
-        if not (conn := open_db(cfg['database'])):
-            return False
-
-        # Use same export logic but with nested html/ folders
-        notebook_data = []
-        notebooks = get_notebooks_from_db(conn)
-
-        for notebook in sorted(notebooks, key=lambda x: f"{x['stack'] or ''}{x['name']}".lower()):
-            if cfg["notebooks"] and notebook["guid"] not in cfg["notebooks"]:
-                continue
-
-            # Create notebook path in base output folder
-            stack_name = (notebook["stack"] or "").strip()
-            notebook_name = notebook["name"].strip()
-
-            if stack_name:
-                notebook_path_abs = posix_join(self.output_folder, stack_name, notebook_name)
-            else:
-                notebook_path_abs = posix_join(self.output_folder, notebook_name)
-
-            # Create html/ subdirectory within notebook
-            html_path_abs = posix_join(notebook_path_abs, "html")
-            os.makedirs(html_path_abs, exist_ok=True)
-
-            notebook_data.append({
-                "guid": notebook["guid"],
-                "path_abs": html_path_abs,
-            })
-
-        # Continue with regular HTML export logic but embed resources
-        conn.close()
-        return self._export_with_embedding(notebook_data)
-
-    def _export_with_embedding(self, notebook_data):
-        # Implementation would embed all resources into HTML files
-        # For now, delegate to parent with embedding enabled
-        original_bundle = cfg.get("bundle_html_resources", False)
-        cfg["bundle_html_resources"] = True
-        result = super().export()
-        cfg["bundle_html_resources"] = original_bundle
-        return result
-    
 def read_vault(vault_folder):
     md_data   = {} # K: full path for .md files,            V: note content
     abs_paths = {} # K: full path for non-.md files,        V: { "links": 0 }
