@@ -1032,6 +1032,18 @@ class Exporter:
                     if not cfg["export_empty_file"] and resource.data.size == 0:
                         continue
 
+                    # Ensure the fileName attribute is a valid string before checking
+                    name_to_test = getattr(resource.attributes, "fileName", None)
+                    if not isinstance(name_to_test, str):
+                        continue
+                    # skip any resource not actually linked in note content
+                    if name_to_test not in note_content:
+                        continue
+                    
+                    # # skip any resource not actually linked in note content e.g. the extra .xml files
+                    # if resource.attributes.fileName not in note_content:
+                    #     continue
+
                     attachment_path_abs = guid_to_path_abs[resource.guid]
 
                     # Save attachment file
@@ -1286,29 +1298,73 @@ class Exporter_Dual(Exporter):
                 full_link = match.group(0)
                 link_path = match.group(1)
                 display_text = match.group(2) if match.group(2) else ""
-
+                
                 # Extract just the filename from the path
                 if '/' in link_path:
                     filename = os.path.basename(link_path)
+                    
+                    # Prefix attachment links with _resources/ so they resolve properly
+                    # Only modify links that appear to be attachments (contain a file extension)
+                    if '.' in filename and not filename.endswith('.md'):
+                        if display_text:
+                            return f"[[{posix_join('_resources', filename)}|{display_text}]]"
+                        else:
+                            return f"[[{posix_join('_resources', filename)}]]"
+                    
                     if display_text:
                         return f"[[{filename}|{display_text}]]"
                     else:
                         return f"[[{filename}]]"
-
+                
                 return full_link
-
+            
             # Fix wikilinks with optional display text
-            md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)
+            md_content = re.sub(r'\\[\\[([^|\\]]+)(?:\\|([^\\]]+))?\\]\\]', fix_link, md_content)
             return md_content
-
+        
         converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
         markdown_content, warnings = converter.convert_html_to_markdown(
             content, [], tasks, guid_to_path, hash_to_path, options)
-
+        
         # Fix the markdown link paths
         markdown_content = fix_md_link_paths(markdown_content)
-
+        
         return markdown_content, warnings
+    
+    # def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+    #     # Fix markdown link paths to be relative within same notebook
+    #     def fix_md_link_paths(md_content):
+    #         # Pattern matches [[notebook_path/note_name.md|display_name]] 
+    #         # and replaces with [[note_name.md|display_name]]
+    #         def fix_link(match):
+    #             full_link = match.group(0)
+    #             link_path = match.group(1)
+    #             display_text = match.group(2) if match.group(2) else ""
+
+    #             # Extract just the filename from the path
+    #             if '/' in link_path:
+    #                 filename = os.path.basename(link_path)
+
+    #                 if display_text:
+    #                     # this should catch evernote note attachments, a bit of a hack here
+    #                     return f"[[{posix_join('_resources', filename)}|{display_text}]]"
+    #                 else:
+    #                     return f"[[{filename}]]"
+
+    #             return full_link
+
+    #         # Fix wikilinks with optional display text
+    #         md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)
+    #         return md_content
+
+    #     converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
+    #     markdown_content, warnings = converter.convert_html_to_markdown(
+    #         content, [], tasks, guid_to_path, hash_to_path, options)
+
+    #     # Fix the markdown link paths
+    #     markdown_content = fix_md_link_paths(markdown_content)
+
+    #     return markdown_content, warnings
 
     def export(self):
         option = confirm_conversion_dialog(self.confirm_title)
