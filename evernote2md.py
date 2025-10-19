@@ -524,7 +524,7 @@ class EvernoteHTMLToMarkdownConverter:
         file_name = os.path.split(file_path)[-1]
         escape    = "\\" if self.inside_table else ""
         preview   = "" if "--en-viewAs:attachment" in style else "!"
-        result    = f"[[{file_path}{escape}|{file_name}]]"
+        result    = f"{preview}[[{file_path}{escape}|{file_name}]]"
         if type_.startswith("audio/") or type_.startswith("video/"):
             result = f"!{result}\n"
         elif type_ == "application/pdf":

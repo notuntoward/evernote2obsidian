@@ -794,8 +794,13 @@ class Exporter:
             is_active, raw_note = row_note
             # Skip processing deleted notes according to config.
             if is_active or cfg["export_trash"]:
-                # Insert Rick and Morty reference... 🥒
-                note = pickle.loads(lzma.decompress(raw_note))
+                # >>>FIX: Add error handling for corrupt/oversized notes<<<
+                try:
+                    # Insert Rick and Morty reference... 🥒
+                    note = pickle.loads(lzma.decompress(raw_note))
+                except (MemoryError, lzma.LZMAError, pickle.UnpicklingError) as e:
+                    log(logging.ERROR, f"  Error loading note data: {type(e).__name__}: {e}")
+                    return False, False, tasks
                 re_note_content = re.search("<en-note[^>]*?>(.+?)</en-note>", note.content, re.DOTALL)
                 note_content = re_note_content[1] if re_note_content else ""
                 # Check if note content is empty
@@ -918,6 +923,10 @@ class Exporter:
                     if not cfg["export_empty_file"] and resource.data.size == 0:
                         continue
 
+                    fn_check = resource.attributes.fileName or ""
+                    if fn_check.lower().endswith('.xml'):
+                        continue
+
                     # In theory, we should preserve the original file name.
                     # Unfortunately, some files have no name, invalid name, or repeated names,
                     # and there can be issues in Obsidian displaying files with wrong extension.
@@ -1036,13 +1045,8 @@ class Exporter:
                     name_to_test = getattr(resource.attributes, "fileName", None)
                     if not isinstance(name_to_test, str):
                         continue
-                    # skip any resource not actually linked in note content
-                    if name_to_test not in note_content:
+                    if name_to_test.lower().endswith('.xml'):
                         continue
-                    
-                    # # skip any resource not actually linked in note content e.g. the extra .xml files
-                    # if resource.attributes.fileName not in note_content:
-                    #     continue
 
                     attachment_path_abs = guid_to_path_abs[resource.guid]
 
@@ -1104,6 +1108,11 @@ class Exporter:
                     # Convert note body to HTML or Markdown
                     converted_content, conversion_issues = self.convert(
                         note_content, guid_to_path_rel, path_to_guid, hash_to_path, task_groups, cfg)
+
+                    # >>>FIX: Remove bogus links (hash, empty embeds, timestamps)<<<
+                    converted_content = re.sub(r'\[\[([0-9a-f]{32})\|\1\]\]', '', converted_content)
+                    converted_content = re.sub(r'!\[\[\|\d+\]\]', '', converted_content)
+                    converted_content = re.sub(r'^\d+:\d+\s*$', '', converted_content, flags=re.MULTILINE)
 
                     if conversion_issues:
                         log(logging.WARNING, f'Issues converting "{note.title}" ({note_path_abs}):')
@@ -1250,7 +1259,7 @@ class Exporter_MD(Exporter):
                 return full_link
 
             # Fix wikilinks with optional display text
-            md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)
+            md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)            
             return md_content
 
         markdown_content, warnings = self.converter.convert_html_to_markdown(
@@ -1267,6 +1276,13 @@ class Exporter_MD(Exporter):
 
         # Fix the markdown link paths
         markdown_content = fix_md_link_paths(markdown_content)
+
+        markdown_content = markdown_content.replace(']][[', ']]\n\n[[')
+
+        # >>>FIX: Remove bogus links (hash, empty embeds, timestamps)<<<
+        markdown_content = re.sub(r'\[\[([0-9a-f]{32})\|\1\]\]', '', markdown_content)
+        markdown_content = re.sub(r'!\[\[\|\d+\]\]', '', markdown_content)
+        markdown_content = re.sub(r'^\d+:\d+\s*$', '', markdown_content, flags=re.MULTILINE)
 
         return markdown_content, warnings
 
@@ -1319,7 +1335,7 @@ class Exporter_Dual(Exporter):
                 return full_link
             
             # Fix wikilinks with optional display text
-            md_content = re.sub(r'\\[\\[([^|\\]]+)(?:\\|([^\\]]+))?\\]\\]', fix_link, md_content)
+            md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)            
             return md_content
         
         converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
@@ -1331,41 +1347,6 @@ class Exporter_Dual(Exporter):
         
         return markdown_content, warnings
     
-    # def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
-    #     # Fix markdown link paths to be relative within same notebook
-    #     def fix_md_link_paths(md_content):
-    #         # Pattern matches [[notebook_path/note_name.md|display_name]] 
-    #         # and replaces with [[note_name.md|display_name]]
-    #         def fix_link(match):
-    #             full_link = match.group(0)
-    #             link_path = match.group(1)
-    #             display_text = match.group(2) if match.group(2) else ""
-
-    #             # Extract just the filename from the path
-    #             if '/' in link_path:
-    #                 filename = os.path.basename(link_path)
-
-    #                 if display_text:
-    #                     # this should catch evernote note attachments, a bit of a hack here
-    #                     return f"[[{posix_join('_resources', filename)}|{display_text}]]"
-    #                 else:
-    #                     return f"[[{filename}]]"
-
-    #             return full_link
-
-    #         # Fix wikilinks with optional display text
-    #         md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)
-    #         return md_content
-
-    #     converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
-    #     markdown_content, warnings = converter.convert_html_to_markdown(
-    #         content, [], tasks, guid_to_path, hash_to_path, options)
-
-    #     # Fix the markdown link paths
-    #     markdown_content = fix_md_link_paths(markdown_content)
-
-    #     return markdown_content, warnings
-
     def export(self):
         option = confirm_conversion_dialog(self.confirm_title)
         if option is None:
@@ -1506,6 +1487,10 @@ class Exporter_Dual(Exporter):
 
                 for resource in note.resources or []:
                     if not cfg["export_empty_file"] and resource.data.size == 0:
+                        continue
+
+                    fn_check = resource.attributes.fileName or ""
+                    if fn_check.lower().endswith('.xml'):
                         continue
 
                     fn = resource.attributes.fileName or "unnamed"
