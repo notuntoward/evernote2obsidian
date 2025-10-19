@@ -747,7 +747,7 @@ class Exporter:
         self.note_ext      = note_ext
 
 
-    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options, hash_to_resource_data=None):
         raise NotImplementedError("Subclasses must implement this method")
 
 
@@ -1041,11 +1041,9 @@ class Exporter:
                     if not cfg["export_empty_file"] and resource.data.size == 0:
                         continue
 
-                    # Ensure the fileName attribute is a valid string before checking
-                    name_to_test = getattr(resource.attributes, "fileName", None)
-                    if not isinstance(name_to_test, str):
-                        continue
-                    if name_to_test.lower().endswith('.xml'):
+                    # >>>FIX: Handle resources without fileName (like HTML export does)<<<
+                    fn_check = resource.attributes.fileName or ""
+                    if fn_check.lower().endswith('.xml'):
                         continue
 
                     attachment_path_abs = guid_to_path_abs[resource.guid]
@@ -1109,10 +1107,12 @@ class Exporter:
                     converted_content, conversion_issues = self.convert(
                         note_content, guid_to_path_rel, path_to_guid, hash_to_path, task_groups, cfg)
 
-                    # >>>FIX: Remove bogus links (hash, empty embeds, timestamps)<<<
+                    # >>>FIX: Remove bogus hash-only links that couldn't be resolved<<<
+                    # >>>FIX: Remove bogus links and cleanup<<<
                     converted_content = re.sub(r'\[\[([0-9a-f]{32})\|\1\]\]', '', converted_content)
                     converted_content = re.sub(r'!\[\[\|\d+\]\]', '', converted_content)
                     converted_content = re.sub(r'^\d+:\d+\s*$', '', converted_content, flags=re.MULTILINE)
+                    converted_content = re.sub(r'\n{4,}', '\n\n\n', converted_content)
 
                     if conversion_issues:
                         log(logging.WARNING, f'Issues converting "{note.title}" ({note_path_abs}):')
@@ -1151,7 +1151,7 @@ class Exporter_HTML(Exporter):
         self.current_note_path = "" # needed for new path sanitation
 
 
-    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options, hash_to_resource_data=None):
 
         errors = []
 
@@ -1171,7 +1171,13 @@ class Exporter_HTML(Exporter):
             # New embedded html resource if enabled - ALWAYS EMBED FOR HTML FILES
             if cfg.get("bundle_html_resources", True) and HTML_FIXES_AVAILABLE:
                 try:
-                    embedded_src = embed_resource_as_data_url(path, type_, self.output_folder)
+                    # >>>FIX: Use binary data from database instead of reading file<<<
+                    if hash in hash_to_resource_data:
+                        binary_data, mime_type = hash_to_resource_data[hash]
+                        embedded_src = embed_resource_as_data_url(path, type_, binary_data=binary_data)
+                    else:
+                        # Fallback to file-based embedding
+                        embedded_src = embed_resource_as_data_url(path, type_, self.output_folder)
                     if embedded_src:
                         path = embedded_src
                 except Exception:
@@ -1238,7 +1244,7 @@ class Exporter_MD(Exporter):
         self.converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
 
 
-    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options, hash_to_resource_data=None):
         # Fix markdown link paths to be relative within same notebook
         def fix_md_link_paths(md_content):
             # Pattern matches [[notebook_path/note_name.md|display_name]] 
@@ -1279,10 +1285,12 @@ class Exporter_MD(Exporter):
 
         markdown_content = markdown_content.replace(']][[', ']]\n\n[[')
 
-        # >>>FIX: Remove bogus links (hash, empty embeds, timestamps)<<<
+        # >>>FIX: Remove bogus hash-only links that couldn't be resolved<<<
+        # >>>FIX: Remove bogus links and cleanup<<<
         markdown_content = re.sub(r'\[\[([0-9a-f]{32})\|\1\]\]', '', markdown_content)
         markdown_content = re.sub(r'!\[\[\|\d+\]\]', '', markdown_content)
         markdown_content = re.sub(r'^\d+:\d+\s*$', '', markdown_content, flags=re.MULTILINE)
+        markdown_content = re.sub(r'\n{4,}', '\n\n\n', markdown_content)
 
         return markdown_content, warnings
 
@@ -1305,7 +1313,7 @@ class Exporter_Dual(Exporter):
             note_ext = ".md",
         )
 
-    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options):
+    def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options, hash_to_resource_data=None):
         # Fix markdown link paths to be relative within same notebook
         def fix_md_link_paths(md_content):
             # Pattern matches [[notebook_path/note_name.md|display_name]] 
@@ -1425,6 +1433,8 @@ class Exporter_Dual(Exporter):
         guid_to_path_abs = {}
         path_to_guid = {}
         hash_to_path = {}
+        # >>>FIX: Store resource binary data for embedding<<<
+        hash_to_resource_data = {}  # Maps hash to (binary_data, mime_type)
         filenames_set = set()
         notebook_data = []
 
@@ -1511,6 +1521,8 @@ class Exporter_Dual(Exporter):
 
                     hash = int.from_bytes(resource.data.bodyHash)
                     hash_to_path[hash] = fn
+                    # >>>FIX: Store resource binary data for HTML embedding<<<
+                    hash_to_resource_data[hash] = (resource.data.body, resource.mime)
 
         # Export HTML notes to html/ subdirectories
         log(IMPORTANT, f"Exporting HTML files to html/ subdirectories")
@@ -1542,7 +1554,7 @@ class Exporter_Dual(Exporter):
 
                 # Convert to HTML with embedded resources
                 converted_content, conversion_issues = html_converter.convert(
-                    note_content, guid_to_path_rel, path_to_guid, hash_to_path, {}, cfg)
+                    note_content, guid_to_path_rel, path_to_guid, hash_to_path, {}, cfg, hash_to_resource_data)
 
                 if conversion_issues:
                     log(logging.WARNING, f'Issues converting "{note.title}":')

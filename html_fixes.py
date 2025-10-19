@@ -47,15 +47,27 @@ def make_web_safe_link_path(note_path: str, current_file_path: str = "") -> str:
 
     return web_path
 
-def embed_resource_as_data_url(resource_path: str, mime_type: str, base_dir: str) -> str:
-    """Embed a resource as a data URL for SingleFile-style bundling."""
-    try:
-        full_path = os.path.join(base_dir, resource_path)
-        if not os.path.exists(full_path):
-            return None
+def embed_resource_as_data_url(resource_path: str, mime_type: str, base_dir: str = None, binary_data: bytes = None) -> str:
+    """Embed a resource as a data URL for SingleFile-style bundling.
 
-        with open(full_path, 'rb') as f:
-            resource_data = f.read()
+    >>>FIX: Can now accept binary data directly instead of reading from file<<<
+    Args:
+        resource_path: Path to resource file (used if binary_data is None)
+        mime_type: MIME type of the resource
+        base_dir: Base directory (used if binary_data is None)
+        binary_data: Binary data to embed (if provided, ignores path)
+    """
+    try:
+        if binary_data is not None:
+            # Use provided binary data directly (for resources from database)
+            resource_data = binary_data
+        else:
+            # Read from file path (original behavior)
+            full_path = os.path.join(base_dir, resource_path)
+            if not os.path.exists(full_path):
+                return None
+            with open(full_path, 'rb') as f:
+                resource_data = f.read()
 
         encoded_data = base64.b64encode(resource_data).decode('utf-8')
         data_url = f"data:{mime_type};base64,{encoded_data}"
