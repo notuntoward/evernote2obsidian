@@ -627,7 +627,7 @@ class EvernoteHTMLToMarkdownConverter:
         part = re.sub(r'(^|\s)(\^)(?=\S)', r'\1\\\2', part)
 
         # Escape sequences of two or more = ~ followed by a non-space character
-        part = re.sub(r"([=~]{2,})(?=\S)", lambda m: "\\" + "\\".join(m.group(1)), part)
+        part = re.sub(r"([~]{2,})(?=\S)", lambda m: "\\" + "\\".join(m.group(1)), part)
 
         # Escape sequences of three or more - *
         #text = re.sub("([-*]{3,})", lambda m: "\\" + "\\".join(m.group(1)), text)

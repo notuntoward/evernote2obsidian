@@ -1173,6 +1173,17 @@ class Exporter:
                         note_content_pre = note_content
                     converted_content, conversion_issues = self.convert(
                             note_content_pre, guid_to_path_rel, path_to_guid, hash_to_path, task_groups, cfg)
+                    # Ensure any residual <img src="..."> become Markdown images
+                    try:
+                        def convert_img_to_md(m):
+                            src = m.group(1)
+                            if src.startswith('_resources/') or src.startswith('./_resources/'):
+                                filename = os.path.basename(src)
+                                return f'![[_resources/{filename}]]'
+                            return f'![]({src})'
+                        converted_content = re.sub(r'<img[^>]*src="([^"]+)"[^>]*>', convert_img_to_md, converted_content)
+                    except Exception:
+                        pass
 
                     # >>>FIX: Remove bogus hash-only links that couldn't be resolved<<<
                     # >>>FIX: Remove bogus links and cleanup<<<
