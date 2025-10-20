@@ -34,6 +34,54 @@ import base64
 from pathlib import Path
 
 
+import re as _e2o_re
+import base64 as _e2o_b64
+from pathlib import Path as _e2o_Path
+
+_DATA_IMG_RE = _e2o_re.compile(
+    r'src="data:(image/(?:png|jpeg|jpg|gif|webp));base64,([^"]+)"',
+    flags=_e2o_re.IGNORECASE
+)
+
+def _extract_data_uri_images_to_resources(html: str, resources_dir: _e2o_Path, note_stem: str) -> str:
+    """Finds <img src="data:image/...;base64,...">, writes each image into resources_dir,
+    rewrites the HTML to use src="_resources/<filename>", and returns the modified HTML."""
+    if not html:
+        return html
+
+    resources_dir.mkdir(parents=True, exist_ok=True)
+    idx = 1
+    def _sub(m):
+        nonlocal idx
+        mime = m.group(1).lower()
+        b64  = m.group(2)
+        ext_map = {'image/jpeg':'jpg','image/jpg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp'}
+        ext  = ext_map.get(mime, 'img')
+        fn   = f"{note_stem} - image{idx}.{ext}"
+        idx += 1
+        (resources_dir / fn).write_bytes(_e2o_b64.b64decode(b64))
+        return f'src="_resources/{fn}"'
+
+    return _DATA_IMG_RE.sub(_sub, html)
+
+
+_HL_FLAG_RE = _e2o_re.compile(
+    r'<span[^>]*?-evernote-highlight\s*:\s*true[^>]*>(.*?)</span>',
+    flags=_e2o_re.IGNORECASE | _e2o_re.DOTALL
+)
+_HL_RGB_RE  = _e2o_re.compile(
+    r'<span[^>]*?background-color\s*:\s*rgb\(\s*255\s*,\s*250\s*,\s*165\s*\)[^>]*>(.*?)</span>',
+    flags=_e2o_re.IGNORECASE | _e2o_re.DOTALL
+)
+def _convert_highlight_spans(html: str) -> str:
+    def _to_md(m): 
+        return f"=={m.group(1)}=="
+    html = _HL_FLAG_RE.sub(_to_md, html)
+    html = _HL_RGB_RE.sub(_to_md, html)
+    return html
+
+
+
 # IMports for new filename uniquification and html outputs if enabled
 try:
     from filename_sanitizer import FilenameManager, sanitize_component
@@ -1107,8 +1155,24 @@ class Exporter:
                     md_properties = "\n".join(md_properties)
 
                     # Convert note body to HTML or Markdown
+
+                    # Preprocess for Markdown: extract any data-URI images to _resources and convert highlight spans
+                    note_content_pre = note_content
+                    try:
+                        if getattr(self, "note_ext", "") == ".md":
+                            _note_dir = os.path.dirname(note_path_abs)
+                            _note_stem = os.path.splitext(os.path.basename(note_path_abs))[0]
+                            note_content_pre = _extract_data_uri_images_to_resources(
+                                note_content_pre,
+                                Path(_note_dir) / "_resources",
+                                _note_stem
+                            )
+                            note_content_pre = _convert_highlight_spans(note_content_pre)
+                    except Exception:
+                        # Non-fatal: fall back to original content if preprocessing fails
+                        note_content_pre = note_content
                     converted_content, conversion_issues = self.convert(
-                        note_content, guid_to_path_rel, path_to_guid, hash_to_path, task_groups, cfg)
+                            note_content_pre, guid_to_path_rel, path_to_guid, hash_to_path, task_groups, cfg)
 
                     # >>>FIX: Remove bogus hash-only links that couldn't be resolved<<<
                     # >>>FIX: Remove bogus links and cleanup<<<
@@ -1815,33 +1879,3 @@ if __name__ == '__main__':
     main()
     restart_log(just_close=True)
 
-
-import re as _e2o_re
-import base64 as _e2o_b64
-from pathlib import Path as _e2o_Path
-
-_DATA_IMG_RE = _e2o_re.compile(
-    r'src="data:(image/(?:png|jpeg|jpg|gif|webp));base64,([^"]+)"',
-    flags=_e2o_re.IGNORECASE
-)
-
-def _extract_data_uri_images_to_resources(html: str, resources_dir: _e2o_Path, note_stem: str) -> str:
-    """Finds <img src="data:image/...;base64,...">, writes each image into resources_dir,
-    rewrites the HTML to use src="_resources/<filename>", and returns the modified HTML."""
-    if not html:
-        return html
-
-    resources_dir.mkdir(parents=True, exist_ok=True)
-    idx = 1
-    def _sub(m):
-        nonlocal idx
-        mime = m.group(1).lower()
-        b64  = m.group(2)
-        ext_map = {'image/jpeg':'jpg','image/jpg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp'}
-        ext  = ext_map.get(mime, 'img')
-        fn   = f"{note_stem} - image{idx}.{ext}"
-        idx += 1
-        (resources_dir / fn).write_bytes(_e2o_b64.b64decode(b64))
-        return f'src="_resources/{fn}"'
-
-    return _DATA_IMG_RE.sub(_sub, html)
