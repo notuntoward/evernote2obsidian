@@ -1110,6 +1110,7 @@ class Exporter:
                     # >>>FIX: Remove bogus hash-only links that couldn't be resolved<<<
                     # >>>FIX: Remove bogus links and cleanup<<<
                     converted_content = re.sub(r'\[\[([0-9a-f]{32})\|\1\]\]', '', converted_content)
+                    converted_content = re.sub(r'\[\[([0-9a-f]{32})\|Attachment:\s*\1\]\]', '', converted_content)
                     converted_content = re.sub(r'!\[\[\|\d+\]\]', '', converted_content)
                     converted_content = re.sub(r'^\d+:\d+\s*$', '', converted_content, flags=re.MULTILINE)
                     converted_content = re.sub(r'\n{4,}', '\n\n\n', converted_content)
@@ -1268,15 +1269,28 @@ class Exporter_MD(Exporter):
             md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)            
             return md_content
 
-        markdown_content, warnings = self.converter.convert_html_to_markdown(
-            content, 
-            md_properties = [], # actually processed by parent of this
-            tasks = tasks,
-            guid_to_path = guid_to_path,
-            hash_to_path = hash_to_path,
-            options      = options)
+        markdown_content, warnings = self.converter.convert_html_to_markdown(content, [], tasks, guid_to_path, hash_to_path, options)
+        # --- ADD: inline image handling like HTML export ---
+        # Replace Evernote <en-media type="image/..."> with Markdown image embeds
+        def _e2o_replace_en_media_images(md_text: str) -> str:
+            import re
+            pattern = r'<en-media[^>]*type="([^"]+)"[^>]*hash="([^"]+)"[^>]*/>'
+            def _repl(m):
+                mime, hash_hex = m.group(1).lower(), m.group(2)
+                if not mime.startswith("image/"):
+                    return m.group(0)
+                try:
+                    hash_int = int(hash_hex, 16)
+                except ValueError:
+                    return m.group(0)
+                rel_path = hash_to_path.get(hash_int)
+                if not rel_path:
+                    return m.group(0)
+                return f'![]({rel_path})'
+            return re.sub(pattern, _repl, md_text)
 
-        # if warnings:
+        markdown_content = _e2o_replace_en_media_images(markdown_content)
+# if warnings:
         #     for warning in warnings:
         #         log(logging.WARNING, f"   - {warning}")
 
@@ -1288,6 +1302,7 @@ class Exporter_MD(Exporter):
         # >>>FIX: Remove bogus hash-only links that couldn't be resolved<<<
         # >>>FIX: Remove bogus links and cleanup<<<
         markdown_content = re.sub(r'\[\[([0-9a-f]{32})\|\1\]\]', '', markdown_content)
+        markdown_content = re.sub(r'\[\[([0-9a-f]{32})\|Attachment:\s*\1\]\]', '', markdown_content)
         markdown_content = re.sub(r'!\[\[\|\d+\]\]', '', markdown_content)
         markdown_content = re.sub(r'^\d+:\d+\s*$', '', markdown_content, flags=re.MULTILINE)
         markdown_content = re.sub(r'\n{4,}', '\n\n\n', markdown_content)
