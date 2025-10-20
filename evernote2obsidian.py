@@ -1141,6 +1141,28 @@ class Exporter:
         return True
 
 
+
+def _e2o_parse_en_media(en_media: str, hash_to_path: dict):
+    """Parse Evernote <en-media .../> and resolve a path via hash_to_path.
+    Returns (type_, path, width_attr, height_attr, hash_int) or (None, None, '', '', None) on failure.
+    """
+    import re as _re
+    try:
+        type_ = _re.findall(r'type="([^"]+)"', en_media)[0]
+        hash_hex = _re.findall(r'hash="([^"]+)"', en_media)[0]
+        width_attr  = (_re.findall(r'\s(width="[^"]+")',  en_media) or [""])[0]
+        height_attr = (_re.findall(r'\s(height="[^"]+")', en_media) or [""])[0]
+    except Exception:
+        return None, None, "", "", None
+    try:
+        hash_int = int(hash_hex, 16)
+    except ValueError:
+        return None, None, "", "", None
+    path = hash_to_path.get(hash_int)
+    if not path:
+        return type_, None, width_attr, height_attr, hash_int
+    return type_, path, width_attr, height_attr, hash_int
+
 class Exporter_HTML(Exporter):
     def __init__(self):
         super().__init__(
@@ -1159,6 +1181,14 @@ class Exporter_HTML(Exporter):
         def subs_en_media(regex_match) -> str:
             en_media = regex_match[1]
             result = en_media
+            # Shared parse (non-invasive; fall back to original vars if parse fails)
+            _t, _p, _w, _h, _hash = _e2o_parse_en_media(en_media, hash_to_path)
+            if _t is not None:
+                type_ = _t
+                path = _p if _p is not None else None
+                width = _w
+                height = _h
+                hash = _hash
             type_  = re.findall('type="([^"]+)"', en_media)[0]
             hash   = int(re.findall('hash="([^"]+)"', en_media)[0], 16)
             if not (path := hash_to_path.get(hash)):
@@ -1269,28 +1299,27 @@ class Exporter_MD(Exporter):
             md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)            
             return md_content
 
-        markdown_content, warnings = self.converter.convert_html_to_markdown(content, [], tasks, guid_to_path, hash_to_path, options)
-        # --- ADD: inline image handling like HTML export ---
-        # Replace Evernote <en-media type="image/..."> with Markdown image embeds
-        def _e2o_replace_en_media_images(md_text: str) -> str:
-            import re
-            pattern = r'<en-media[^>]*type="([^"]+)"[^>]*hash="([^"]+)"[^>]*/>'
-            def _repl(m):
-                mime, hash_hex = m.group(1).lower(), m.group(2)
-                if not mime.startswith("image/"):
-                    return m.group(0)
-                try:
-                    hash_int = int(hash_hex, 16)
-                except ValueError:
-                    return m.group(0)
-                rel_path = hash_to_path.get(hash_int)
-                if not rel_path:
-                    return m.group(0)
-                return f'![]({rel_path})'
-            return re.sub(pattern, _repl, md_text)
+        # Preprocess Evernote <en-media .../> using shared detection so images become <img> before MD conversion.
+        def _md_enmedia_to_html(m) -> str:
+            en_media = m.group(1)
+            type_, path, width_attr, height_attr, _ = _e2o_parse_en_media(en_media, hash_to_path)
+            if not type_ or not path:
+                return m.group(0)
+            if type_.startswith("image"):
+                return f'<img src="{path}"{width_attr}{height_attr} />'
+            return f'<a href="{path}">{path}</a>'
 
-        markdown_content = _e2o_replace_en_media_images(markdown_content)
-# if warnings:
+        content = re.sub(r'<en-media ([^>]+)\s*/>', _md_enmedia_to_html, content)
+
+        markdown_content, warnings = self.converter.convert_html_to_markdown(
+            content, 
+            md_properties = [], # actually processed by parent of this
+            tasks = tasks,
+            guid_to_path = guid_to_path,
+            hash_to_path = hash_to_path,
+            options      = options)
+
+        # if warnings:
         #     for warning in warnings:
         #         log(logging.WARNING, f"   - {warning}")
 
