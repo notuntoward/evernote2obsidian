@@ -30,6 +30,9 @@ from   datetime    import datetime, timezone
 from   zoneinfo    import ZoneInfo
 from   posixpath   import join as posix_join, normpath as posix_normpath, abspath as posix_abspath
 from   evernote2md import EvernoteHTMLToMarkdownConverter
+import base64
+from pathlib import Path
+
 
 # IMports for new filename uniquification and html outputs if enabled
 try:
@@ -1811,3 +1814,34 @@ def main():
 if __name__ == '__main__':
     main()
     restart_log(just_close=True)
+
+
+import re as _e2o_re
+import base64 as _e2o_b64
+from pathlib import Path as _e2o_Path
+
+_DATA_IMG_RE = _e2o_re.compile(
+    r'src="data:(image/(?:png|jpeg|jpg|gif|webp));base64,([^"]+)"',
+    flags=_e2o_re.IGNORECASE
+)
+
+def _extract_data_uri_images_to_resources(html: str, resources_dir: _e2o_Path, note_stem: str) -> str:
+    """Finds <img src="data:image/...;base64,...">, writes each image into resources_dir,
+    rewrites the HTML to use src="_resources/<filename>", and returns the modified HTML."""
+    if not html:
+        return html
+
+    resources_dir.mkdir(parents=True, exist_ok=True)
+    idx = 1
+    def _sub(m):
+        nonlocal idx
+        mime = m.group(1).lower()
+        b64  = m.group(2)
+        ext_map = {'image/jpeg':'jpg','image/jpg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp'}
+        ext  = ext_map.get(mime, 'img')
+        fn   = f"{note_stem} - image{idx}.{ext}"
+        idx += 1
+        (resources_dir / fn).write_bytes(_e2o_b64.b64decode(b64))
+        return f'src="_resources/{fn}"'
+
+    return _DATA_IMG_RE.sub(_sub, html)
