@@ -785,6 +785,29 @@ def get_unique_filename(filename, existing_files):
     return unique_filename
 
 
+
+def post_process_markdown_for_obsidian(markdown_content):
+    """
+    Post-process markdown content to fix Obsidian compatibility issues.
+    
+    Fixes:
+    1. Converts remaining <img> tags to Obsidian markdown format
+    2. Unescapes highlight markers (\== to ==)
+    """
+    # Convert remaining img tags to markdown format
+    def convert_img_to_md(m):
+        src = m.group(1)
+        if src.startswith('_resources/') or src.startswith('./_resources/'):
+            filename = os.path.basename(src)
+            return f'![[_resources/{filename}]]'
+        return f'![]({src})'
+    markdown_content = re.sub(r'<img[^>]*src="([^"]+)"[^>]*>', convert_img_to_md, markdown_content)
+    
+    # Fix escaped highlight markers for Obsidian compatibility
+    markdown_content = markdown_content.replace(r'\==', '==')
+    
+    return markdown_content
+
 class Exporter:
     def __init__(self, 
                  format,
@@ -1414,6 +1437,8 @@ class Exporter_MD(Exporter):
         markdown_content = re.sub(r'^\d+:\d+\s*$', '', markdown_content, flags=re.MULTILINE)
         markdown_content = re.sub(r'\n{4,}', '\n\n\n', markdown_content)
 
+        markdown_content = post_process_markdown_for_obsidian(markdown_content)
+
         return markdown_content, warnings
 
 
@@ -1475,6 +1500,8 @@ class Exporter_Dual(Exporter):
         # Fix the markdown link paths
         markdown_content = fix_md_link_paths(markdown_content)
         
+        markdown_content = post_process_markdown_for_obsidian(markdown_content)
+
         return markdown_content, warnings
     
     def export(self):
