@@ -785,29 +785,6 @@ def get_unique_filename(filename, existing_files):
     return unique_filename
 
 
-
-def post_process_markdown_for_obsidian(markdown_content):
-    """
-    Post-process markdown content to fix Obsidian compatibility issues.
-    
-    Fixes:
-    1. Converts remaining <img> tags to Obsidian markdown format
-    2. Unescapes highlight markers (\== to ==)
-    """
-    # Convert remaining img tags to markdown format
-    def convert_img_to_md(m):
-        src = m.group(1)
-        if src.startswith('_resources/') or src.startswith('./_resources/'):
-            filename = os.path.basename(src)
-            return f'![[_resources/{filename}]]'
-        return f'![]({src})'
-    markdown_content = re.sub(r'<img[^>]*src="([^"]+)"[^>]*>', convert_img_to_md, markdown_content)
-    
-    # Fix escaped highlight markers for Obsidian compatibility
-    markdown_content = markdown_content.replace(r'\==', '==')
-    
-    return markdown_content
-
 class Exporter:
     def __init__(self, 
                  format,
@@ -825,8 +802,11 @@ class Exporter:
         raise NotImplementedError("Subclasses must implement this method")
 
 
-    def export(self):
-        option = confirm_conversion_dialog(self.confirm_title)
+    def export(self, skip_confirmation=False):
+        if not skip_confirmation:
+            option = confirm_conversion_dialog(self.confirm_title)
+        else:
+            option = "Export"
         if option is None:     return False
         if option == "Cancel": return True
 
@@ -1191,6 +1171,8 @@ class Exporter:
                                 _note_stem
                             )
                             note_content_pre = _convert_highlight_spans(note_content_pre)
+                            # Convert <img> tags to markdown BEFORE the converter strips them
+                            note_content_pre = re.sub(r'<img[^>]*src="(_resources/[^"]+)"[^>]*>', lambda m: f'![]({m.group(1)})', note_content_pre)
                     except Exception:
                         # Non-fatal: fall back to original content if preprocessing fails
                         note_content_pre = note_content
@@ -1238,7 +1220,6 @@ class Exporter:
                 log(logging.ERROR, error)
 
         conn.close()
-        input("\n[ENTER] to continue.")
         return True
 
 
@@ -1437,7 +1418,8 @@ class Exporter_MD(Exporter):
         markdown_content = re.sub(r'^\d+:\d+\s*$', '', markdown_content, flags=re.MULTILINE)
         markdown_content = re.sub(r'\n{4,}', '\n\n\n', markdown_content)
 
-        markdown_content = post_process_markdown_for_obsidian(markdown_content)
+        # Fix escaped highlight markers
+        markdown_content = markdown_content.replace('\\==', '==')
 
         return markdown_content, warnings
 
@@ -1500,7 +1482,8 @@ class Exporter_Dual(Exporter):
         # Fix the markdown link paths
         markdown_content = fix_md_link_paths(markdown_content)
         
-        markdown_content = post_process_markdown_for_obsidian(markdown_content)
+        # Fix escaped highlight markers
+        markdown_content = markdown_content.replace('\\==', '==')
 
         return markdown_content, warnings
     
@@ -1511,22 +1494,26 @@ class Exporter_Dual(Exporter):
         if option == "Cancel":
             return True
 
-        if not (conn := open_db(cfg['database'])):
-            return False
+        log(IMPORTANT, "\n" + "="*60)
+        log(IMPORTANT, "DUAL EXPORT: Starting HTML + Markdown conversion")
+        log(IMPORTANT, "="*60)
 
-        # First export HTML with embedding to html/ subdirectories
-        log(IMPORTANT, "Starting dual export - Phase 1: HTML with embedding")
+        # Phase 1: HTML (manages its own DB connection)
+        log(IMPORTANT, "\nPhase 1/2: Exporting HTML files...")
         if not self._export_html_embedded():
-            conn.close()
+            log(IMPORTANT, "ERROR: HTML export failed")
             return False
+        log(IMPORTANT, "✓ HTML export completed")
 
-        # Then export MD with enhanced content 
-        log(IMPORTANT, "Starting dual export - Phase 2: Markdown with source links")
+        # Phase 2: Markdown (manages its own DB connection via parent)
+        log(IMPORTANT, "\nPhase 2/2: Exporting Markdown files...")
         result = self._export_md_with_enhancements()
 
-        conn.close()
         if result:
-            print("Dual export completed successfully!")
+            log(IMPORTANT, "\n" + "="*60)
+            log(IMPORTANT, "✓ DUAL EXPORT COMPLETED SUCCESSFULLY")
+            log(IMPORTANT, "="*60 + "\n")
+
         return result
 
     def _export_html_embedded(self):
@@ -1724,7 +1711,7 @@ class Exporter_Dual(Exporter):
     def _export_md_with_enhancements(self):
         """Export markdown files with source links to corresponding HTML files."""
         # Do regular MD export using the parent Exporter class
-        if not super().export():
+        if not super().export(skip_confirmation=True):
             return False
 
         # Post-process to add source section and cross-references
