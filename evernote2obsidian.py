@@ -1282,6 +1282,48 @@ def _e2o_postprocess_placeholders_to_wikilinks(content: str, hash_to_path: dict)
     return content
 
 
+def _e2o_fix_md_link_paths_highlights(md_content: str) -> str:
+    """Fix markdown wikilink paths to be relative (filename only).
+
+    Converts [[notebook_path/note_name.md|display]] to [[note_name.md|display]].
+    Also adds spacing between consecutive wikilinks and removes highlight escape junk.
+
+    Args:
+        md_content: Markdown content with wikilinks
+
+    Returns:
+        Modified markdown with fixed link paths
+    """
+    import os
+    import re
+
+    def fix_link(match):
+        full_link = match.group(0)
+        link_path = match.group(1)
+        display_text = match.group(2) if match.group(2) else ""
+
+        # Extract just the filename from the path
+        if '/' in link_path:
+            filename = os.path.basename(link_path)
+            if display_text:
+                return f"[[{filename}|{display_text}]]"
+            else:
+                return f"[[{filename}]]"
+
+        return full_link
+
+    # Fix wikilinks with optional display text
+    md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)
+
+    # Add spacing between consecutive wikilinks
+    md_content = md_content.replace(']][[', ']]\n\n[[')
+
+    # Fix escaped highlight markers
+    md_content = md_content.replace('\\==', '==')
+
+    return md_content
+
+
 
 def _e2o_parse_en_media(en_media: str, hash_to_path: dict):
     """Parse Evernote <en-media .../> and resolve a path via hash_to_path.
@@ -1417,33 +1459,10 @@ class Exporter_MD(Exporter):
 
 
     def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options, hash_to_resource_data=None):
-        # Fix markdown link paths to be relative within same notebook
-        def fix_md_link_paths(md_content):
-            # Pattern matches [[notebook_path/note_name.md|display_name]] 
-            # and replaces with [[note_name.md|display_name]]
-            def fix_link(match):
-                full_link = match.group(0)
-                link_path = match.group(1)
-                display_text = match.group(2) if match.group(2) else ""
-
-                # Extract just the filename from the path
-                if '/' in link_path:
-                    filename = os.path.basename(link_path)
-                    if display_text:
-                        return f"[[{filename}|{display_text}]]"
-                    else:
-                        return f"[[{filename}]]"
-
-                return full_link
-
-            # Fix wikilinks with optional display text
-            md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)            
-            return md_content
-
         # Preprocess en-media tags to placeholder markers
         content = _e2o_preprocess_enmedia_to_placeholders(content)
 
-
+        # Convert HTML to markdown
         markdown_content, warnings = self.converter.convert_html_to_markdown(
             content, 
             md_properties = [], # actually processed by parent of this
@@ -1455,25 +1474,8 @@ class Exporter_MD(Exporter):
         # Postprocess: replace placeholders with wikilinks
         markdown_content = _e2o_postprocess_placeholders_to_wikilinks(markdown_content, hash_to_path)
 
-        # if warnings:
-        #     for warning in warnings:
-        #         log(logging.WARNING, f"   - {warning}")
-
-        # Fix the markdown link paths
-        markdown_content = fix_md_link_paths(markdown_content)
-
-        markdown_content = markdown_content.replace(']][[', ']]\n\n[[')
-
-        # >>>FIX: Remove bogus hash-only links that couldn't be resolved<<<
-        # >>>FIX: Remove bogus links and cleanup<<<
-        markdown_content = re.sub(r'\[\[([0-9a-f]{32})\|\1\]\]', '', markdown_content)
-        markdown_content = re.sub(r'\[\[([0-9a-f]{32})\|Attachment:\s*\1\]\]', '', markdown_content)
-        markdown_content = re.sub(r'!\[\[\|\d+\]\]', '', markdown_content)
-        markdown_content = re.sub(r'^\d+:\d+\s*$', '', markdown_content, flags=re.MULTILINE)
-        markdown_content = re.sub(r'\n{4,}', '\n\n\n', markdown_content)
-
-        # Fix escaped highlight markers
-        markdown_content = markdown_content.replace('\\==', '==')
+        # Fix markdown link paths
+        markdown_content = _e2o_fix_md_link_paths_highlights(markdown_content)
 
         return markdown_content, warnings
 
@@ -1497,53 +1499,19 @@ class Exporter_Dual(Exporter):
         )
 
     def convert(self, content, guid_to_path, path_to_guid, hash_to_path, tasks, options, hash_to_resource_data=None):
-        # Fix markdown link paths to be relative within same notebook
-        def fix_md_link_paths(md_content):
-            # Pattern matches [[notebook_path/note_name.md|display_name]] 
-            # and replaces with [[note_name.md|display_name]]
-            def fix_link(match):
-                full_link = match.group(0)
-                link_path = match.group(1)
-                display_text = match.group(2) if match.group(2) else ""
-                
-                # Extract just the filename from the path
-                if '/' in link_path:
-                    filename = os.path.basename(link_path)
-                    
-                    # Prefix attachment links with _resources/ so they resolve properly
-                    # Only modify links that appear to be attachments (contain a file extension)
-                    if '.' in filename and not filename.endswith('.md'):
-                        if display_text:
-                            return f"[[{posix_join('_resources', filename)}|{display_text}]]"
-                        else:
-                            return f"[[{posix_join('_resources', filename)}]]"
-                    
-                    if display_text:
-                        return f"[[{filename}|{display_text}]]"
-                    else:
-                        return f"[[{filename}]]"
-                
-                return full_link
-            
-            # Fix wikilinks with optional display text
-            md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)            
-            return md_content
-        
         # Preprocess en-media tags to placeholder markers
         content = _e2o_preprocess_enmedia_to_placeholders(content)
-        
+
+        # Convert HTML to markdown
         converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
         markdown_content, warnings = converter.convert_html_to_markdown(
             content, [], tasks, guid_to_path, hash_to_path, options)
-        
+
         # Postprocess: replace placeholders with wikilinks
         markdown_content = _e2o_postprocess_placeholders_to_wikilinks(markdown_content, hash_to_path)
-        
-        # Fix the markdown link paths
-        markdown_content = fix_md_link_paths(markdown_content)
-        
-        # Fix escaped highlight markers
-        markdown_content = markdown_content.replace('\\==', '==')
+
+        # Fix markdown link paths
+        markdown_content = _e2o_fix_md_link_paths_highlights(markdown_content)
 
         return markdown_content, warnings
     
