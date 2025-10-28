@@ -1224,6 +1224,65 @@ class Exporter:
 
 
 
+def _e2o_preprocess_enmedia_to_placeholders(content: str) -> str:
+    """Replace Evernote <en-media> tags with unique text placeholders.
+
+    Uses §§§ markers that won't be escaped by the markdown converter.
+
+    Args:
+        content: HTML content containing <en-media> tags
+
+    Returns:
+        Modified HTML content with en-media tags replaced by placeholders
+    """
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(content, 'html.parser')
+    for media in soup.find_all('en-media'):
+        hash_hex = media.get('hash')
+        mime_type = media.get('type', '')
+        if hash_hex:
+            # Use §§§ markers - these won't be escaped by markdown converter
+            placeholder = f'§§§ENMEDIA_{hash_hex}_{mime_type.replace("/", "_")}§§§'
+            media.replace_with(soup.new_string(placeholder))
+    return str(soup)
+
+
+def _e2o_postprocess_placeholders_to_wikilinks(content: str, hash_to_path: dict) -> str:
+    """Replace placeholder markers with Obsidian wikilinks.
+
+    This must be called AFTER markdown conversion to avoid bracket escaping.
+
+    Args:
+        content: Markdown content containing placeholder markers
+        hash_to_path: Dictionary mapping hash integers to file paths
+
+    Returns:
+        Modified markdown content with placeholders replaced by wikilinks
+    """
+    import re
+
+    def replace_placeholder(match):
+        hash_hex = match.group(1)
+        mime_type = match.group(2).replace('_', '/')
+        hash_int = int(hash_hex, 16)
+
+        if hash_int in hash_to_path:
+            file_path = hash_to_path[hash_int]
+            # Use Obsidian wikilink format with ! prefix for images/PDFs
+            if mime_type.startswith(('image/', 'application/pdf')):
+                return f'![[{file_path}]]'
+            else:
+                return f'[[{file_path}]]'
+        else:
+            # If path not found, return original placeholder (for debugging)
+            return match.group(0)
+
+    # Replace all placeholders
+    content = re.sub(r'§§§ENMEDIA_([a-f0-9]+)_([^§]+)§§§', replace_placeholder, content)
+    return content
+
+
+
 def _e2o_parse_en_media(en_media: str, hash_to_path: dict):
     """Parse Evernote <en-media .../> and resolve a path via hash_to_path.
     Returns (type_, path, width_attr, height_attr, hash_int) or (None, None, '', '', None) on failure.
@@ -1381,17 +1440,9 @@ class Exporter_MD(Exporter):
             md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)            
             return md_content
 
-        # Preprocess Evernote <en-media .../> using shared detection so images become <img> before MD conversion.
-        def _md_enmedia_to_html(m) -> str:
-            en_media = m.group(1)
-            type_, path, width_attr, height_attr, _ = _e2o_parse_en_media(en_media, hash_to_path)
-            if not type_ or not path:
-                return m.group(0)
-            if type_.startswith("image"):
-                return f'<img src="{path}"{width_attr}{height_attr} />'
-            return f'<a href="{path}">{path}</a>'
+        # Preprocess en-media tags to placeholder markers
+        content = _e2o_preprocess_enmedia_to_placeholders(content)
 
-        content = re.sub(r'<en-media ([^>]+)\s*/>', _md_enmedia_to_html, content)
 
         markdown_content, warnings = self.converter.convert_html_to_markdown(
             content, 
@@ -1400,6 +1451,9 @@ class Exporter_MD(Exporter):
             guid_to_path = guid_to_path,
             hash_to_path = hash_to_path,
             options      = options)
+
+        # Postprocess: replace placeholders with wikilinks
+        markdown_content = _e2o_postprocess_placeholders_to_wikilinks(markdown_content, hash_to_path)
 
         # if warnings:
         #     for warning in warnings:
@@ -1475,9 +1529,15 @@ class Exporter_Dual(Exporter):
             md_content = re.sub(r'\[\[([^|\]]+)(?:\|([^\]]+))?\]\]', fix_link, md_content)            
             return md_content
         
+        # Preprocess en-media tags to placeholder markers
+        content = _e2o_preprocess_enmedia_to_placeholders(content)
+        
         converter = EvernoteHTMLToMarkdownConverter(use_html=cfg["html_with_md_ext"])
         markdown_content, warnings = converter.convert_html_to_markdown(
             content, [], tasks, guid_to_path, hash_to_path, options)
+        
+        # Postprocess: replace placeholders with wikilinks
+        markdown_content = _e2o_postprocess_placeholders_to_wikilinks(markdown_content, hash_to_path)
         
         # Fix the markdown link paths
         markdown_content = fix_md_link_paths(markdown_content)
