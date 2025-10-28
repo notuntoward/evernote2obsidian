@@ -1274,8 +1274,11 @@ def _e2o_postprocess_placeholders_to_wikilinks(content: str, hash_to_path: dict)
             else:
                 return f'[[{file_path}]]'
         else:
+            # If path not found, return a user-friendly error message
+            return f'⚠️ Missing {mime_type}: {hash_hex}'
             # If path not found, return original placeholder (for debugging)
-            return match.group(0)
+            #return match.group(0)
+            
 
     # Replace all placeholders
     content = re.sub(r'§§§ENMEDIA_([a-f0-9]+)_([^§]+)§§§', replace_placeholder, content)
@@ -1791,8 +1794,8 @@ class Exporter_Dual(Exporter):
                 # Build source section
                 source_section = ""
                 if source_url:
-                    source_section += f"[Source]({source_url}) | "
-                source_section += f"[Note HTML]({html_rel_encoded})"
+                    source_section += f"[URL]({source_url}) | "
+                source_section += f"[HTML]({html_rel_encoded})"
                 if created_date:
                     source_section += f" | {created_date}"
                 source_section += "\n\n---\n"
