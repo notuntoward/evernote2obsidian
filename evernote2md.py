@@ -213,7 +213,7 @@ class EvernoteHTMLToMarkdownConverter:
                 result = result.replace("\n", f"\n{indent}")
 
         # An empty line in Evernote is a <div><br/></div>, which could create
-        # a double line break in Markdown. So we strip any trailing new line.
+        # a double line break in Markdown. So w2e strip any trailing new line.
         if result.endswith('\n'):
             result = result[:-1]
 
@@ -267,6 +267,10 @@ class EvernoteHTMLToMarkdownConverter:
                     elif self._use_html("text color / color:rgb"):
                         return f'<span style="{style}">{content}</span>'
 
+        # Block elements like <p> need trailing newline
+        if node.name in block_level_elements:
+            return f'{content}\n'
+                    
         return content
 
     def _process_simple_tags(self, node) -> str:
@@ -437,7 +441,21 @@ class EvernoteHTMLToMarkdownConverter:
             result.insert(1, f"| {' | '.join(separators)} |")
 
         self.inside_table = False
-        return "\n" + "\n".join(result) + "\n"
+        
+        # Tables need a blank line before them in Markdown
+        # Find previous non-whitespace sibling to determine if need to add one
+        prev = node.previous_sibling
+        while prev and isinstance(prev, str) and not prev.strip():
+            prev = prev.previous_sibling
+        
+        # If previous sibling is a block element, it will end with \n, so we need one more \n
+        # If previous sibling is inline or doesn't exist, we need \n\n
+        if prev and hasattr(prev, 'name') and prev.name in block_level_elements:
+            prefix = "\n"  # Previous block element ends with \n, add one more
+        else:
+            prefix = "\n\n"  # Need two newlines to create blank line
+        
+        return f'{prefix}{"\n".join(result)}\n'
 
     def _process_link(self, node) -> str:
         """Convert HTML links to Markdown links."""
