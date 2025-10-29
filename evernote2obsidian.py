@@ -336,7 +336,8 @@ def has_emoji(s):
         r"|[\U0001F800-\U0001F8FF]"  # Supplemental Arrows-C
         r"|[\U0001F900-\U0001F9FF]"  # Supplemental Symbols and Pictographs
         r"|[\U0001FA00-\U0001FA6F]"  # Chess Symbols
-        r"|[\U0001FA70-\U0001FAFF]"  # Symbols and Pictographs Extended-A
+        r"|[\U0001FA70-\U0001FAFF]"  # Symbols and Pictographs Extended-A
+
         r"|[\U00002702-\U000027B0]"  # Dingbats
        #"|[\U000024C2-\U0001F251]"  # Enclosed characters # Conflicts with Japanese / Kanji
         r"|[\U0001F1E6-\U0001F1FF]"  # Flags (iOS)
@@ -1117,6 +1118,9 @@ class Exporter:
                     # Prepare note properties
                     md_properties = ["---"]
 
+                    md_properties.append(f"category:")
+                    md_properties.append(f" - evernote_note")
+
                     if note.tagNames:
                         md_properties.append("tags:")
                         for tag in note.tagNames:
@@ -1125,6 +1129,9 @@ class Exporter:
 
                     if note.attributes.sourceURL:
                         md_properties.append(f"URL: {note.attributes.sourceURL}")
+
+                    if note.title:
+                        md_properties.append(f"Title: {note.title}")
 
                     if note.created:
                         time_ = datetime.fromtimestamp(note.created//1000).strftime('%Y-%m-%d %H:%M:%S')
