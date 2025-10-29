@@ -44,7 +44,7 @@ NOISE_TOKENS = {'index','default','home','page','http','https','www','html','htm
 
 def tokenize_name(name: str) -> list[str]:
     """Extract alphanumeric tokens from a name."""
-    return re.findall(r"[A-Za-z0-9]+", name)
+    return re.findall(r"[A-Za-z0-9']+", name)
 
 def is_informative(tok: str) -> bool:
     """Check if a token is informative (not a stopword or noise token)."""
