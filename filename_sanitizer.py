@@ -23,6 +23,7 @@ WINDOWS_RESERVED = {
 }
 
 FORBIDDEN_CHARS_PATTERN = re.compile(r'[<>:"/\\|?*\[\]\^#%]|[\x00-\x1f]')
+CURLY_APOSTROPHE_PATTERN = re.compile(r'[\u2018\u2019]')
 REPLACEMENT_CHAR = '_'
 
 # File size limits
@@ -43,8 +44,8 @@ STOPWORDS = {
 NOISE_TOKENS = {'index','default','home','page','http','https','www','html','htm'}
 
 def tokenize_name(name: str) -> list[str]:
-    """Extract alphanumeric tokens from a name."""
-    return re.findall(r"[A-Za-z0-9']+", name)
+    """Extract alphanumeric tokens from a name, preserving apostrophes (including curly) within words."""
+    return re.findall(r"[A-Za-z0-9]+(?:['\u2018\u2019][A-Za-z0-9]+)*", name)
 
 def is_informative(tok: str) -> bool:
     """Check if a token is informative (not a stopword or noise token)."""
@@ -56,7 +57,7 @@ def is_informative(tok: str) -> bool:
 def abbreviate_token(tok: str, max_len: int = 10) -> str:
     """
     Abbreviate a single token using intelligent strategies.
-    
+
     Strategies (in order):
     1. Return as-is if digit or already short enough
     2. Extract CamelCase initials
@@ -169,6 +170,7 @@ def sanitize_component(name: str, max_length: int = MAX_COMPONENT, *, allow_spac
         return 'unnamed'
 
     separator = ' ' if allow_spaces else REPLACEMENT_CHAR
+    name = CURLY_APOSTROPHE_PATTERN.sub("'", name)
     name = FORBIDDEN_CHARS_PATTERN.sub(REPLACEMENT_CHAR, name)
     name = name.replace(':', REPLACEMENT_CHAR)
     name = name.rstrip(' .')

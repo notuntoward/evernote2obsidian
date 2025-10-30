@@ -338,6 +338,7 @@ def has_emoji(s):
         r"|[\U0001FA00-\U0001FA6F]"  # Chess Symbols
         r"|[\U0001FA70-\U0001FAFF]"  # Symbols and Pictographs Extended-A
 
+
         r"|[\U00002702-\U000027B0]"  # Dingbats
        #"|[\U000024C2-\U0001F251]"  # Enclosed characters # Conflicts with Japanese / Kanji
         r"|[\U0001F1E6-\U0001F1FF]"  # Flags (iOS)
@@ -1290,8 +1291,11 @@ def _e2o_postprocess_placeholders_to_wikilinks(content: str, hash_to_path: dict)
             else:
                 return f'[[{file_path}]]'
         else:
-            # If path not found, return a user-friendly error message
-            return f'⚠️ Missing {mime_type}: {hash_hex}'
+            # If path not found, skip non-displayable types silently
+            if mime_type.startswith(('text/', 'application/vnd.', 'application/xml')):
+                return ""
+            # For actual missing media, return warning
+            return f'⚠️ Missing {mime_type}: {hash_hex}' 
             # If path not found, return original placeholder (for debugging)
             #return match.group(0)
             
@@ -1300,6 +1304,72 @@ def _e2o_postprocess_placeholders_to_wikilinks(content: str, hash_to_path: dict)
     content = re.sub(r'§§§ENMEDIA_([a-f0-9]+)_([^§]+)§§§', replace_placeholder, content)
     return content
 
+
+
+def _e2o_format_video_blocks(markdown_content: str) -> str:
+    """Post-process markdown to format video blocks with duration patterns.
+
+    Filters out video player UI elements and formats as:
+    **Video: title (duration)**
+    *description*
+    """
+    import re
+
+    # UI elements to skip (from video player controls)
+    ui_keywords = {'subtitle', 'settings', 'font', 'size', 'edge', 'color', 'background',
+                   'captions', 'quality', 'speed', 'playback', 'volume'}
+
+    lines = markdown_content.split('\n')
+    processed_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Check if this line looks like a video duration (H:MM or HH:MM format)
+        if re.match(r'^\d{1,2}:\d{2}$', line.strip()):
+            title = ''
+            if i > 0 and processed_lines:
+                potential_title = processed_lines[-1].strip()
+                if not any(keyword in potential_title.lower() for keyword in ui_keywords):
+                    title = processed_lines.pop().strip()
+
+            duration = line.strip()
+            description_lines = []
+
+            i += 1
+            while i < len(lines):
+                next_line = lines[i].strip()
+                if not next_line or next_line.startswith('#'):
+                    break
+                if any(keyword in next_line.lower() for keyword in ui_keywords):
+                    i += 1
+                    continue
+                if re.match(r'^\d{1,2}:\d{2}$', next_line):
+                    break
+                description_lines.append(lines[i])
+                i += 1
+
+            # Add blank line before video block if previous line is not blank
+            if processed_lines and processed_lines[-1].strip():
+                processed_lines.append('')
+
+            if title:
+                processed_lines.append(f'**Video: {title} ({duration})**')
+            else:
+                processed_lines.append(f'**Video ({duration})**')
+
+            for desc_line in description_lines:
+                if desc_line.strip():
+                    processed_lines.append(f'*{desc_line.strip()}*')
+
+            i -= 1
+        else:
+            processed_lines.append(line)
+
+        i += 1
+
+    return '\n'.join(processed_lines)
 
 def _e2o_fix_md_link_paths_highlights(md_content: str) -> str:
     """Fix markdown wikilink paths to be relative (filename only).
@@ -1492,6 +1562,7 @@ class Exporter_MD(Exporter):
 
         # Postprocess: replace placeholders with wikilinks
         markdown_content = _e2o_postprocess_placeholders_to_wikilinks(markdown_content, hash_to_path)
+        markdown_content = _e2o_format_video_blocks(markdown_content)
 
         # Fix markdown link paths
         markdown_content = _e2o_fix_md_link_paths_highlights(markdown_content)
@@ -1528,6 +1599,7 @@ class Exporter_Dual(Exporter):
 
         # Postprocess: replace placeholders with wikilinks
         markdown_content = _e2o_postprocess_placeholders_to_wikilinks(markdown_content, hash_to_path)
+        markdown_content = _e2o_format_video_blocks(markdown_content)
 
         # Fix markdown link paths
         markdown_content = _e2o_fix_md_link_paths_highlights(markdown_content)
