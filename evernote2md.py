@@ -516,6 +516,9 @@ class EvernoteHTMLToMarkdownConverter:
         alt   = node.get('alt',   '')
         title = node.get('title', '') 
         if src.startswith("data:image"):
+            # Skip SVG inline images
+            if "svg" in src:
+                return ""
             # Base64 images are exported with <img> tag
             self.warnings.append(f"Added base64 image")
             alt_   = f' alt="{alt}"'     if alt   else ""
@@ -529,6 +532,11 @@ class EvernoteHTMLToMarkdownConverter:
         """Convert Evernote media to Obsidian Markdown."""
         result = ""
         type_  = node.get("type",  "")
+
+        # EXCLUDE SVG ICONS
+        if type_ == "image/svg+xml" or type_.endswith("svg+xml"):
+            return ""
+
         style  = node.get("style", "")
         hash_hex = node.get("hash")
         hash_int = int(hash_hex, 16)

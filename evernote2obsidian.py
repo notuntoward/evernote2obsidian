@@ -336,7 +336,7 @@ def has_emoji(s):
         r"|[\U0001F800-\U0001F8FF]"  # Supplemental Arrows-C
         r"|[\U0001F900-\U0001F9FF]"  # Supplemental Symbols and Pictographs
         r"|[\U0001FA00-\U0001FA6F]"  # Chess Symbols
-        r"|[\U0001FA70-\U0001FAFF]"  # Symbols and Pictographs Extended-A
+        r"|[\U0001FA70-\U0001FAFF]"  # Symbols and Pictographs Extended-A
 
         r"|[\U00002702-\U000027B0]"  # Dingbats
        #"|[\U000024C2-\U0001F251]"  # Enclosed characters # Conflicts with Japanese / Kanji
@@ -987,6 +987,10 @@ class Exporter:
                     # and there can be issues in Obsidian displaying files with wrong extension.
                     # So, be sure attachment has a file name with correct extension.
                     fn        = resource.attributes.fileName or "unnamed"
+                    # Clean URL-encoded filenames and strip query parameters
+                    from urllib.parse import unquote
+                    fn = unquote(fn)
+                    fn = fn.split('?')[0].split('&')[0]
                     mime_ext  = mimetypes.guess_extension(resource.mime) # "image/png" -> ".png"
                     root, ext = os.path.splitext(fn)
                     if root.strip() == "":
@@ -1271,6 +1275,11 @@ def _e2o_postprocess_placeholders_to_wikilinks(content: str, hash_to_path: dict)
     def replace_placeholder(match):
         hash_hex = match.group(1)
         mime_type = match.group(2).replace('_', '/')
+
+        # EXCLUDE SVG ICONS
+        if mime_type == "image/svg+xml" or mime_type.endswith("svg+xml"):
+            return ""
+
         hash_int = int(hash_hex, 16)
 
         if hash_int in hash_to_path:
