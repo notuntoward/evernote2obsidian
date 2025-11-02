@@ -207,7 +207,7 @@ class EvernoteHTMLToMarkdownConverter:
             #         Workaround: use a bullet list (works even if you set it on just the 1s line!).
             padding_left = re.findall(r"(?:padding|margin)-left\s*:\s*(\d+)\s*px", style)
             if padding_left:
-                indent = "    " * (int(padding_left[0])//40)
+                indent = "  " * (int(padding_left[0])//40)
                 result = f'{indent}{result}'
                 # If list item has \n in the content, add indent
                 result = result.replace("\n", f"\n{indent}")
@@ -348,12 +348,12 @@ class EvernoteHTMLToMarkdownConverter:
 
     def _process_list_item(self, node) -> str:
         """Process list items with proper indentation."""
-        indent  = '    ' * (self.indent_level - 1)
+        indent  = '  ' * (self.indent_level - 1)
         content = self._process_node_children(node)
         content = content.strip()
 
         # If list item has \n in the content, add indent
-        content = content.replace("\n", f"\n{indent}   ")
+        content = content.replace("\n", f"\n{indent} ")
 
         if '--en-checked:' in node.get('style', ''):
             checked = '--en-checked:true' in node.get('style', '')
