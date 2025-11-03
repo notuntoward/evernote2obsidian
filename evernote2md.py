@@ -134,6 +134,8 @@ class EvernoteHTMLToMarkdownConverter:
             save_result('\n')
         elif node.name == 'hr':
             save_result('___\n') # or '---', '* * *'
+        elif node.name == 'pre':
+            save_result(self._process_pre(node))
         elif node.name == 'en-todo':
             save_result(self._process_checkbox(node))
         elif node.name == 'en-media':
@@ -312,6 +314,45 @@ class EvernoteHTMLToMarkdownConverter:
         if url:
             result = f'[{result}]({url}){lf}'
         return result
+
+    def _process_pre(self, node) -> str:
+        """Process <pre> tags (code blocks) and convert to markdown code fences."""
+        # Extract code from pre tag, handling <br> tags and span blocks
+        lines = []
+
+        # Check if pre contains span elements (Evernote style)
+        spans = node.find_all('span')
+        if spans:
+            for span in spans:
+                # Check if this span should have a blank line before it
+                style = span.get('style', '')
+                if 'margin-top:1.41em' in style and lines:
+                    lines.append('')
+
+                # Replace <br> tags with newline markers
+                for br in span.find_all('br'):
+                    br.replace_with('\n')
+
+                # Get the text from this span
+                span_text = span.get_text()
+
+                # Split into lines and add them
+                span_lines = span_text.split('\n')
+                lines.extend(span_lines)
+
+            code_text = '\n'.join(lines)
+        else:
+            # Simple pre tag without spans - just get the text
+            # Replace <br> tags with newlines
+            for br in node.find_all('br'):
+                br.replace_with('\n')
+            code_text = node.get_text()
+
+        # Remove trailing/leading whitespace but preserve internal structure
+        code_text = code_text.strip()
+
+        # Return as markdown code fence
+        return f'```\n{code_text}\n```\n\n'
 
     def _process_header(self, node) -> str:
         """Convert HTML headers to Markdown headers."""
